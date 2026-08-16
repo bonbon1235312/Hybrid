@@ -5,7 +5,10 @@ export type DomainErrorCode =
   | "LEAGUE_NOT_FOUND"
   | "TEAM_ALREADY_EXISTS"
   | "TEAM_NOT_FOUND"
-  | "DISCORD_ROLE_ALREADY_MAPPED";
+  | "DISCORD_ROLE_ALREADY_MAPPED"
+  | "REGISTRATION_ALREADY_OPEN"
+  | "REGISTRATION_NOT_FOUND"
+  | "REGISTRATION_NOT_PENDING";
 
 export class DomainError extends Error {
   readonly code: DomainErrorCode;
