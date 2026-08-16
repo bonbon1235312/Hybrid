@@ -6,7 +6,7 @@
 
 **Architecture:** Implement a TypeScript modular monolith. Discord handlers only translate interactions to application-service calls; application services own authorization, validation, database transactions, audit insertion, and durable role-sync job creation. PostgreSQL is authoritative in production; PGlite provides an isolated PostgreSQL-compatible integration database for tests.
 
-**Tech Stack:** Node.js 24.14.0, TypeScript 7.0.2, discord.js 14.27.0, PostgreSQL with Drizzle ORM 0.45.2, Zod 4.4.3, Pino 10.3.1, Vitest 4.1.10, PGlite 0.5.5.
+**Tech Stack:** Node.js 24.14.0, TypeScript 6.0.3, discord.js 14.27.0, PostgreSQL with Drizzle ORM 0.45.2, Zod 4.4.3, Pino 10.3.1, Vitest 4.1.10, PGlite 0.5.5.
 
 ## Global Constraints
 
@@ -59,7 +59,6 @@
 - Create: eslint.config.mjs
 - Create: src/platform/config.ts
 - Create: src/platform/logger.ts
-- Create: src/main.ts
 - Create: tests/platform/config.test.ts
 - Create: .env.example
 - Create: .gitignore
@@ -547,7 +546,7 @@ Expected: PASS; command surface stays small, controls are contextual, stale/unau
 ## Task 9: Compose the app, document it, and verify end-to-end
 
 **Files:**
-- Modify: src/main.ts
+- Create: src/main.ts
 - Create: src/app.ts
 - Create: tests/e2e/league-core.test.ts
 - Create: README.md
