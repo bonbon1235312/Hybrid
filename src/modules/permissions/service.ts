@@ -20,7 +20,7 @@ export function requirePermission(context: LeagueContext, permission: Permission
 }
 
 function isOutsideManagerScope(context: LeagueContext, permission: Permission, teamId: string | undefined): boolean {
-  if (permission !== "ROSTER_MANAGE" || !teamId) {
+  if (permission !== "ROSTER_MANAGE") {
     return false;
   }
 
@@ -28,5 +28,9 @@ function isOutsideManagerScope(context: LeagueContext, permission: Permission, t
     (role) => role === "OWNER" || role === "ADMINISTRATOR"
   );
 
-  return !hasLeagueWideRosterAuthority && !context.actor.managedTeamIds.includes(teamId);
+  if (hasLeagueWideRosterAuthority) {
+    return false;
+  }
+
+  return !teamId?.trim() || !context.actor.managedTeamIds.includes(teamId);
 }

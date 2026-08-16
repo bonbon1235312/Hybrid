@@ -23,15 +23,21 @@ describe("requirePermission", () => {
       .not.toThrow();
   });
 
-  it("allows managers to manage rosters but not teams", () => {
-    const context = seedLeagueContext({ role: "MANAGER" });
+  it("requires managers to name one of their teams for roster actions", () => {
+    const context = seedLeagueContext({ role: "MANAGER", managedTeamIds: ["team-a"] });
 
-    expect(() => requirePermission(context, "ROSTER_MANAGE")).not.toThrow();
+    expect(() => requirePermission(context, "ROSTER_MANAGE")).toThrow(/not permitted/i);
+    expect(() => requirePermission(context, "ROSTER_MANAGE", "team-a")).not.toThrow();
+    expect(() => requirePermission(context, "ROSTER_MANAGE", "team-b")).toThrow(/not permitted/i);
     expect(() => requirePermission(context, "TEAM_MANAGE")).toThrow(/not permitted/i);
   });
 });
 
-function seedLeagueContext(input: { role: LeagueContext["actor"]["role"]; discordAdministrator?: boolean }): LeagueContext {
+function seedLeagueContext(input: {
+  role: LeagueContext["actor"]["role"];
+  discordAdministrator?: boolean;
+  managedTeamIds?: readonly string[];
+}): LeagueContext {
   return {
     leagueId: "00000000-0000-4000-8000-000000000001",
     discordGuildId: "guild-1",
@@ -40,7 +46,7 @@ function seedLeagueContext(input: { role: LeagueContext["actor"]["role"]; discor
       leagueMemberId: "00000000-0000-4000-8000-000000000011",
       role: input.role,
       roles: [input.role],
-      managedTeamIds: [],
+      managedTeamIds: input.managedTeamIds ?? [],
       ...(input.discordAdministrator === undefined ? {} : { discordAdministrator: input.discordAdministrator })
     }
   };
