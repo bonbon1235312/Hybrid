@@ -16,7 +16,15 @@ const environmentSchema = z.object({
   DISCORD_TOKEN: z.string().min(1, "DISCORD_TOKEN is required"),
   DISCORD_CLIENT_ID: z.string().regex(/^\d+$/, "DISCORD_CLIENT_ID is required"),
   HYBRID_COMPONENT_SIGNING_KEY: z.string().min(32, "HYBRID_COMPONENT_SIGNING_KEY is required"),
-  DATABASE_URL: z.string().url("DATABASE_URL must be a valid URL"),
+  DATABASE_URL: z.string()
+    .url("DATABASE_URL must be a valid URL")
+    .refine(
+      (value) => {
+        const protocol = new URL(value).protocol;
+        return protocol === "mysql:" || protocol === "mysqls:";
+      },
+      "DATABASE_URL must use mysql:// or mysqls://"
+    ),
   LOG_LEVEL: z.enum(logLevels).default("info")
 });
 

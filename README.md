@@ -7,19 +7,21 @@ It supports league setup, teams, player registration and staff review, capacity-
 ## Prerequisites
 
 - Node.js 24.14 or newer
-- Docker Desktop (for local PostgreSQL)
+- Docker Desktop (for local MySQL 8 and integration tests)
 - A Discord application with a bot token
 
 ## Local setup
 
 1. Install dependencies with `npm install`.
-2. Start PostgreSQL with `docker compose up -d postgres`.
+2. Start MySQL 8 with `docker compose up -d mysql`.
 3. Copy `.env.example` to `.env` and supply your Discord application credentials. Do not commit `.env`.
 4. Apply the production migration with `npm run migrate`. Migration state is recorded in `hybrid_schema_migrations`, so repeat runs are safe.
 5. Register the two global Discord commands with `npm run commands:register`.
 6. Start the app with `npm run dev`.
 
 For a compiled launch, use `npm run build` and then `npm start`. The build copies the SQL migration beside the runtime code; startup validates config, applies outstanding migrations, logs in the Discord client, and starts the durable role-sync worker. `SIGINT` and `SIGTERM` stop the worker, Discord client, and database pool cleanly.
+
+Hybrid requires MySQL 8.0.46 or newer. Set `DATABASE_URL` to a MySQL URL such as `mysql://USER:PERCENT_ENCODED_PASSWORD@HOST:3306/DATABASE`; never commit it. Use a newly rotated password if a connection string has been shared in chat or screenshots. Tests use an isolated disposable MySQL container and must never run against the production Hybrid schema.
 
 ## Discord configuration
 

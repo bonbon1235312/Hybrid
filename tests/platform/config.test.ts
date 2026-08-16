@@ -8,7 +8,7 @@ describe("loadConfig", () => {
       DISCORD_TOKEN: "token",
       DISCORD_CLIENT_ID: "123",
       HYBRID_COMPONENT_SIGNING_KEY: "a-32-character-component-signing-key",
-      DATABASE_URL: "postgres://hybrid:hybrid@localhost:5432/hybrid"
+      DATABASE_URL: "mysql://hybrid:hybrid@localhost:3306/hybrid"
     });
 
     expect(config).toMatchObject({
@@ -23,5 +23,14 @@ describe("loadConfig", () => {
       DISCORD_CLIENT_ID: "123"
       ,HYBRID_COMPONENT_SIGNING_KEY: "a-32-character-component-signing-key"
     })).toThrow("DATABASE_URL is required");
+  });
+
+  it("rejects a database URL for another engine", () => {
+    expect(() => loadConfig({
+      DISCORD_TOKEN: "token",
+      DISCORD_CLIENT_ID: "123",
+      HYBRID_COMPONENT_SIGNING_KEY: "a-32-character-component-signing-key",
+      DATABASE_URL: "postgres://hybrid:hybrid@localhost:5432/hybrid"
+    })).toThrow("DATABASE_URL must use mysql:// or mysqls://");
   });
 });
