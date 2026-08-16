@@ -7,6 +7,7 @@ import {
   ModalBuilder,
   PermissionFlagsBits,
   StringSelectMenuBuilder,
+  UserSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
   type Interaction
@@ -49,6 +50,14 @@ export function createDiscordRoleGateway(client: Client): DiscordRoleGateway {
       const member = await guild.members.fetch(discordUserId);
       await member.roles.set(roleIds.filter((roleId) => roleId !== guild.id));
     },
+    addMemberRole: async (discordGuildId, discordUserId, roleId) => {
+      const guild = await client.guilds.fetch(discordGuildId);
+      if (roleId !== guild.id) await (await guild.members.fetch(discordUserId)).roles.add(roleId);
+    },
+    removeMemberRole: async (discordGuildId, discordUserId, roleId) => {
+      const guild = await client.guilds.fetch(discordGuildId);
+      if (roleId !== guild.id) await (await guild.members.fetch(discordUserId)).roles.remove(roleId);
+    },
     roleExists: async (discordGuildId, roleId) => {
       if (roleId === discordGuildId) {
         return false;
@@ -71,7 +80,7 @@ function isUnknownRole(error: unknown): boolean {
 }
 
 function adaptInteraction(interaction: Interaction): InteractionLike | null {
-  if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isModalSubmit()) {
+  if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isUserSelectMenu() && !interaction.isModalSubmit()) {
     return null;
   }
 
@@ -111,7 +120,7 @@ function adaptInteraction(interaction: Interaction): InteractionLike | null {
   return {
     ...base,
     customId: interaction.customId,
-    ...(interaction.isStringSelectMenu() ? { values: interaction.values } : {}),
+    ...(interaction.isStringSelectMenu() || interaction.isUserSelectMenu() ? { values: interaction.values } : {}),
     isButton: () => interaction.isButton(),
     isStringSelectMenu: () => interaction.isStringSelectMenu(),
     isModalSubmit: () => interaction.isModalSubmit(),
@@ -139,11 +148,12 @@ function toDiscordReply(options: InteractionReplyOptions) {
 
 function toDiscordRow(row: Readonly<{ components: readonly ReplyComponent[] }>) {
   const components = row.components.map((component) => toDiscordComponent(component));
-  return new ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>().addComponents(components);
+  return new ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder | UserSelectMenuBuilder>().addComponents(components);
 }
 
-function toDiscordComponent(component: ReplyComponent): ButtonBuilder | StringSelectMenuBuilder {
+function toDiscordComponent(component: ReplyComponent): ButtonBuilder | StringSelectMenuBuilder | UserSelectMenuBuilder {
   const data = component.data;
+  if (data.type === "user-select") return new UserSelectMenuBuilder().setCustomId(data.customId);
   if (data.type === "select") {
     return new StringSelectMenuBuilder()
       .setCustomId(data.customId)

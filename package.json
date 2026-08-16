@@ -9,7 +9,6 @@
   "scripts": {
     "build": "tsc && node scripts/copy-migrations.mjs",
     "commands:register": "tsx src/discord/register-commands.ts",
-    "db:generate": "drizzle-kit generate",
     "dev": "tsx watch src/main.ts",
     "lint": "eslint . --max-warnings=0",
     "migrate": "tsx src/platform/migrate.ts",
@@ -33,7 +32,6 @@
     "@types/pg": "8.15.6",
     "@typescript-eslint/eslint-plugin": "8.67.0",
     "@typescript-eslint/parser": "8.67.0",
-    "drizzle-kit": "0.31.10",
     "eslint": "10.8.1",
     "tsx": "4.23.12",
     "typescript": "6.0.3",

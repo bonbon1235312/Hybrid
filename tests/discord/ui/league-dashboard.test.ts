@@ -42,6 +42,11 @@ describe("renderLeagueDashboard", () => {
     expect(buttonLabels(reply)).toContain("Withdraw registration");
     expect(buttonLabels(reply)).not.toContain("Register");
   });
+
+  it("gives an owner a first-team creation control", () => {
+    const reply = renderLeagueDashboard({ context: { leagueId: "league-1", discordGuildId: "guild-1", actor: { discordUserId: "owner-1", role: "OWNER", roles: ["OWNER"], managedTeamIds: [] } }, canManageGuild: false, teams: [], pendingRegistrations: [] });
+    expect(buttonLabels(reply)).toContain("Create team");
+  });
 });
 
 function buttonLabels(reply: { components?: readonly { components: readonly { data?: { label?: string } }[] }[] }): string[] {

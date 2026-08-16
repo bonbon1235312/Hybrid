@@ -10,6 +10,7 @@ import { createRegistrationService } from "./modules/registrations/service.js";
 import { createRosterService } from "./modules/rosters/service.js";
 import { createTeamService } from "./modules/teams/service.js";
 import { createDiscordClient, createDiscordRoleGateway } from "./discord/client.js";
+import { configureRouteStore } from "./discord/ui/route-store.js";
 import type { ApplicationServices } from "./discord/types.js";
 import type { AppConfig } from "./platform/config.js";
 import type { TransactionalDatabase } from "./platform/database.js";
@@ -52,6 +53,7 @@ export async function createHybridApplication(dependencies: HybridApplicationDep
   if (database.migrate) {
     await database.migrate();
   }
+  configureRouteStore(database);
 
   const logger = createLogger(config?.logLevel ?? "info");
   const audit = createAuditRepository(database);

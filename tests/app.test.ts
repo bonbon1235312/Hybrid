@@ -10,7 +10,7 @@ describe("HybridApplication worker lifecycle", () => {
     const slowWorker = new DeferredWorker();
     let closeCalls = 0;
     const app = await createHybridApplication({
-      config: { discordToken: "test-token", discordClientId: "123", databaseUrl: "postgres://unused", logLevel: "error" },
+      config: { discordToken: "test-token", discordClientId: "123", componentSigningKey: "a-32-character-component-signing-key", databaseUrl: "postgres://unused", logLevel: "error" },
       database: { transaction: database.transaction.bind(database), close: async () => { closeCalls += 1; await database.close(); } },
       discordClient: { login: async () => undefined, destroy: () => undefined },
       discordGateway: noOpGateway,

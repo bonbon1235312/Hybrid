@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 
 import { Pool, type PoolClient } from "pg";
 
@@ -9,8 +9,7 @@ export type ProductionDatabase = TransactionalDatabase & Readonly<{
   close(): Promise<void>;
 }>;
 
-const migrationId = "0000_league_core";
-const migrationUrl = new URL("./migrations/0000_league_core.sql", import.meta.url);
+const migrationDirectory = new URL("./migrations/", import.meta.url);
 
 /** Creates the PostgreSQL transaction adapter used by the production composition root. */
 export function createDatabase(databaseUrl: string): ProductionDatabase {
@@ -51,14 +50,16 @@ async function migrate(pool: Pool): Promise<void> {
          applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
        )`
     );
-    const applied = await client.query<{ id: string }>(
-      "SELECT id FROM hybrid_schema_migrations WHERE id = $1 FOR UPDATE",
-      [migrationId]
-    );
-
-    if (!applied.rows[0]) {
-      await client.query(await readFile(migrationUrl, "utf8"));
-      await client.query("INSERT INTO hybrid_schema_migrations (id) VALUES ($1)", [migrationId]);
+    for (const name of (await readdir(migrationDirectory)).filter((file) => file.endsWith(".sql")).sort()) {
+      const id = name.slice(0, -4);
+      const applied = await client.query<{ id: string }>(
+        "SELECT id FROM hybrid_schema_migrations WHERE id = $1 FOR UPDATE",
+        [id]
+      );
+      if (!applied.rows[0]) {
+        await client.query(await readFile(new URL(name, migrationDirectory), "utf8"));
+        await client.query("INSERT INTO hybrid_schema_migrations (id) VALUES ($1)", [id]);
+      }
     }
 
     await client.query("COMMIT");

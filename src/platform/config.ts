@@ -7,6 +7,7 @@ export type LogLevel = (typeof logLevels)[number];
 export type AppConfig = Readonly<{
   discordToken: string;
   discordClientId: string;
+  componentSigningKey: string;
   databaseUrl: string;
   logLevel: LogLevel;
 }>;
@@ -14,11 +15,12 @@ export type AppConfig = Readonly<{
 const environmentSchema = z.object({
   DISCORD_TOKEN: z.string().min(1, "DISCORD_TOKEN is required"),
   DISCORD_CLIENT_ID: z.string().regex(/^\d+$/, "DISCORD_CLIENT_ID is required"),
+  HYBRID_COMPONENT_SIGNING_KEY: z.string().min(32, "HYBRID_COMPONENT_SIGNING_KEY is required"),
   DATABASE_URL: z.string().url("DATABASE_URL must be a valid URL"),
   LOG_LEVEL: z.enum(logLevels).default("info")
 });
 
-const requiredKeys = ["DISCORD_TOKEN", "DISCORD_CLIENT_ID", "DATABASE_URL"] as const;
+const requiredKeys = ["DISCORD_TOKEN", "DISCORD_CLIENT_ID", "DATABASE_URL", "HYBRID_COMPONENT_SIGNING_KEY"] as const;
 
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   for (const key of requiredKeys) {
@@ -32,6 +34,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   return {
     discordToken: parsed.DISCORD_TOKEN,
     discordClientId: parsed.DISCORD_CLIENT_ID,
+    componentSigningKey: parsed.HYBRID_COMPONENT_SIGNING_KEY,
     databaseUrl: parsed.DATABASE_URL,
     logLevel: parsed.LOG_LEVEL
   };

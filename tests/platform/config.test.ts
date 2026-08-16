@@ -7,6 +7,7 @@ describe("loadConfig", () => {
     const config = loadConfig({
       DISCORD_TOKEN: "token",
       DISCORD_CLIENT_ID: "123",
+      HYBRID_COMPONENT_SIGNING_KEY: "a-32-character-component-signing-key",
       DATABASE_URL: "postgres://hybrid:hybrid@localhost:5432/hybrid"
     });
 
@@ -20,6 +21,7 @@ describe("loadConfig", () => {
     expect(() => loadConfig({
       DISCORD_TOKEN: "token-that-must-not-appear",
       DISCORD_CLIENT_ID: "123"
+      ,HYBRID_COMPONENT_SIGNING_KEY: "a-32-character-component-signing-key"
     })).toThrow("DATABASE_URL is required");
   });
 });

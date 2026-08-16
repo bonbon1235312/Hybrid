@@ -7,6 +7,8 @@ import type { DiscordJob, DiscordJobRepository } from "./repository.js";
 export type DiscordRoleGateway = Readonly<{
   getMemberRoles(discordGuildId: string, discordUserId: string): Promise<readonly string[]>;
   setMemberRoles(discordGuildId: string, discordUserId: string, roleIds: readonly string[]): Promise<void>;
+  addMemberRole?(discordGuildId: string, discordUserId: string, roleId: string): Promise<void>;
+  removeMemberRole?(discordGuildId: string, discordUserId: string, roleId: string): Promise<void>;
   roleExists(discordGuildId: string, roleId: string): Promise<boolean>;
 }>;
 
@@ -160,7 +162,14 @@ async function applyRoleReconciliation(
   );
 
   if (!sameRoleIds(currentRoleIds, nextRoleIds)) {
-    await gateway.setMemberRoles(plan.discordGuildId, plan.discordUserId, nextRoleIds);
+    const removed = currentRoleIds.filter((roleId) => !nextRoleIds.includes(roleId) && roleId === plan.affected.discordRoleId);
+    const added = nextRoleIds.filter((roleId) => !currentRoleIds.includes(roleId) && roleId === plan.desired?.discordRoleId);
+    if (gateway.addMemberRole && gateway.removeMemberRole) {
+      for (const roleId of removed) await gateway.removeMemberRole(plan.discordGuildId, plan.discordUserId, roleId);
+      for (const roleId of added) await gateway.addMemberRole(plan.discordGuildId, plan.discordUserId, roleId);
+    } else {
+      await gateway.setMemberRoles(plan.discordGuildId, plan.discordUserId, nextRoleIds);
+    }
   }
 }
 

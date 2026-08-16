@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { PGlite } from "@electric-sql/pglite";
@@ -11,13 +11,13 @@ export type TestDatabase = PGlite & {
   dispose(): Promise<void>;
 };
 
-const migrationPath = fileURLToPath(new URL("./migrations/0000_league_core.sql", import.meta.url));
+const migrationDirectory = fileURLToPath(new URL("./migrations/", import.meta.url));
 
 export async function createTestDatabase(): Promise<TestDatabase> {
   const database = new PGlite();
-  const migration = await readFile(migrationPath, "utf8");
-
-  await database.exec(migration);
+  for (const name of (await readdir(migrationDirectory)).filter((file) => file.endsWith(".sql")).sort()) {
+    await database.exec(await readFile(`${migrationDirectory}${name}`, "utf8"));
+  }
 
   return Object.assign(database, {
     db: drizzle({ client: database, schema }),

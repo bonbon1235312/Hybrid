@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { LeagueContext } from "../modules/league/types.js";
 import { DomainError } from "../platform/errors.js";
 import { renderConfirmation } from "./ui/confirmation.js";
+import { consumeDurableRoute } from "./ui/route-store.js";
 import {
   consumeComponentRoute,
   decodeComponentId,
@@ -49,6 +50,9 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
   }
 
   const context = await resolveContext(interaction, services);
+  if (context && !await consumeDurableRoute(context, route)) {
+    throw new DomainError("ACTION_EXPIRED", "That control has expired or was already used. Open `/league` for a fresh dashboard.");
+  }
 
   switch (route.action) {
     case "cancel":
@@ -84,6 +88,25 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
         inputs: [{ customId: "display-name", label: "Display name", required: true, placeholder: interaction.user.displayName }]
       });
       return;
+    case "team.create":
+      requireContext(context);
+      await interaction.showModal({ customId: componentId("team.create.submit", interaction.user.id), title: "Create team", inputs: [
+        { customId: "team-name", label: "Team name", required: true },
+        { customId: "roster-cap", label: "Roster cap", required: true, placeholder: "12" },
+        { customId: "discord-role-id", label: "Discord role ID (optional)", required: false }
+      ] });
+      return;
+    case "team.create.submit": {
+      requireContext(context);
+      await interaction.deferUpdate();
+      const discordRoleId = optionalTextField(interaction, "discord-role-id");
+      await services.teams.createTeam(context, {
+        name: textField(interaction, "team-name"), rosterCap: Number(textField(interaction, "roster-cap")),
+        ...(discordRoleId ? { discordRoleId } : {})
+      });
+      await interaction.editReply(await renderDashboard(interaction, services, context));
+      return;
+    }
     case "registration.submit": {
       requireContext(context);
       await interaction.deferUpdate();
@@ -174,15 +197,22 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
     case "roster.assign":
       requireContext(context);
       requireEntity(route);
-      await interaction.showModal({
-        customId: componentId("roster.assign.submit", interaction.user.id, route.entityId),
-        title: "Assign player",
-        inputs: [
-          { customId: "player-id", label: "Player membership ID", required: true },
-          { customId: "membership-role", label: "Role: PLAYER, CAPTAIN, or MANAGER", required: true, placeholder: "PLAYER" }
-        ]
-      });
+      await interaction.deferUpdate();
+      await interaction.editReply({ content: "**Assign player**\nChoose a Discord member. Their current league registration is checked before assignment.", ephemeral: true, components: [{ components: [{ data: { type: "user-select", customId: componentId("roster.assign.player", interaction.user.id, route.entityId) } }] }] });
       return;
+    case "roster.assign.player": {
+      requireContext(context);
+      requireEntity(route);
+      const discordUserId = interaction.values?.[0];
+      if (!discordUserId || !interaction.guildId) throw new DomainError("INVALID_INPUT", "Choose a player from this server.");
+      const playerContext = await services.leagues.resolveLeagueContext(interaction.guildId, discordUserId);
+      if (!playerContext?.actor.leagueMemberId) throw new DomainError("PLAYER_NOT_APPROVED", "That Discord member has no active league membership.");
+      await interaction.deferUpdate();
+      await services.teams.getTeamDashboard(context, route.entityId);
+      await services.rosters.assignPlayerToTeam(context, { teamId: route.entityId, playerId: playerContext.actor.leagueMemberId, role: "PLAYER" });
+      await interaction.editReply({ content: "Player assigned. Discord role sync is queued.", ephemeral: true });
+      return;
+    }
     case "roster.assign.submit":
       requireContext(context);
       requireEntity(route);
@@ -342,6 +372,7 @@ function textField(interaction: ComponentInteractionLike, customId: string): str
   }
   return value;
 }
+function optionalTextField(interaction: ComponentInteractionLike, customId: string): string | undefined { const value = interaction.fields?.getTextInputValue(customId).trim(); return value || undefined; }
 
 function canManageGuild(interaction: BaseInteractionLike): boolean {
   return interaction.manageGuild === true;

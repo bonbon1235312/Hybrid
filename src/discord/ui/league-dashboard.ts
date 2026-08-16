@@ -37,6 +37,9 @@ export function renderLeagueDashboard(input: LeagueDashboardInput): InteractionR
   if (context.actor.roles.includes("OWNER") || context.actor.roles.includes("ADMINISTRATOR") || context.actor.roles.includes("STAFF")) {
     actions.push({ data: { type: "button", label: `Registrations (${input.pendingRegistrations.length})`, style: "secondary", customId: encodeComponentId({ action: "registrations", actorId }) } });
   }
+  if (context.actor.roles.includes("OWNER") || context.actor.roles.includes("ADMINISTRATOR")) {
+    actions.push({ data: { type: "button", label: "Create team", style: "primary", customId: encodeComponentId({ action: "team.create", actorId }) } });
+  }
   const teamSelect: ReplyComponent | null = input.teams.length > 0
     ? {
       data: {
