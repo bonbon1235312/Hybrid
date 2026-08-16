@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { withTransaction, type TransactionalDatabase } from "../../platform/database.js";
 import type { AuditRepository } from "../audit/types.js";
 import type { DiscordJob, DiscordJobRepository } from "./repository.js";
@@ -67,13 +69,14 @@ async function runOnce(
   gateway: DiscordRoleGateway,
   options: RoleSyncWorkerOptions
 ): Promise<WorkerRunSummary> {
-  const claimed = await jobs.claimDiscordJobs(options.workerId, options.claimLimit, options.leaseSeconds);
+  const claimOwner = `${options.workerId}:${randomUUID()}`;
+  const claimed = await jobs.claimDiscordJobs(claimOwner, options.claimLimit, options.leaseSeconds);
   const summary = { claimed: claimed.length, completed: 0, retried: 0, failed: 0, recoveries: 0 };
 
   for (const job of claimed) {
     try {
       const recovery = await reconcileJob(database, audit, gateway, job);
-      const completed = await jobs.completeClaimedJob(options.workerId, job.id);
+      const completed = await jobs.completeClaimedJob(claimOwner, job.id);
 
       if (completed) {
         summary.completed += 1;
@@ -84,7 +87,7 @@ async function runOnce(
     } catch (error) {
       const finalAttempt = job.attemptCount >= options.maxAttempts;
       const updated = await jobs.retryClaimedJob({
-        workerId: options.workerId,
+        workerId: claimOwner,
         jobId: job.id,
         errorCode: errorCode(error),
         delaySeconds: retryDelaySeconds(job.attemptCount, options.retryBaseSeconds),

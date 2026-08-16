@@ -183,6 +183,34 @@ describe("RoleSyncWorker", () => {
       await fixture.database.dispose();
     }
   });
+
+  it("does not let an expired older claim finish a newer claim from the same worker ID", async () => {
+    const fixture = await createFixture();
+
+    try {
+      const assignment = await createAssignedPlayer(fixture, "Northstar", "role-1", "player-1");
+      const gateway = new StaggeredGateway();
+      const worker = createWorker(fixture, gateway);
+
+      const olderRun = worker.runOnce();
+      await gateway.firstSetStarted.promise;
+      await fixture.database.query(
+        "UPDATE discord_jobs SET lease_expires_at = NOW() - INTERVAL '1 second' WHERE deduplication_key = $1",
+        [`role-sync:${assignment.membership.id}`]
+      );
+      const newerRun = worker.runOnce();
+      await gateway.secondSetStarted.promise;
+
+      gateway.releaseFirst.resolve();
+      await expect(olderRun).resolves.toMatchObject({ claimed: 1, completed: 0 });
+      expect(await jobStatus(fixture.database, `role-sync:${assignment.membership.id}`)).toBe("LEASED");
+
+      gateway.releaseSecond.resolve();
+      await expect(newerRun).resolves.toMatchObject({ claimed: 1, completed: 1 });
+    } finally {
+      await fixture.database.dispose();
+    }
+  });
 });
 
 async function createFixture() {
@@ -229,7 +257,7 @@ async function createAssignedPlayer(
 
 function createWorker(
   fixture: Awaited<ReturnType<typeof createFixture>>,
-  gateway: FakeDiscordRoleGateway
+  gateway: DiscordRoleGateway
 ) {
   return createRoleSyncWorker(fixture.database, fixture.jobs, fixture.audit, gateway, {
     workerId: "worker-1",
@@ -304,5 +332,32 @@ class FakeDiscordRoleGateway implements DiscordRoleGateway {
 
   async roleExists(_discordGuildId: string, roleId: string): Promise<boolean> {
     return this.existingRoles.has(roleId);
+  }
+}
+
+class StaggeredGateway implements DiscordRoleGateway {
+  readonly firstSetStarted = Promise.withResolvers<void>();
+  readonly secondSetStarted = Promise.withResolvers<void>();
+  readonly releaseFirst = Promise.withResolvers<void>();
+  readonly releaseSecond = Promise.withResolvers<void>();
+  private setCalls = 0;
+
+  async getMemberRoles(): Promise<readonly string[]> {
+    return [];
+  }
+
+  async setMemberRoles(): Promise<void> {
+    this.setCalls += 1;
+    if (this.setCalls === 1) {
+      this.firstSetStarted.resolve();
+      await this.releaseFirst.promise;
+      return;
+    }
+    this.secondSetStarted.resolve();
+    await this.releaseSecond.promise;
+  }
+
+  async roleExists(): Promise<boolean> {
+    return true;
   }
 }

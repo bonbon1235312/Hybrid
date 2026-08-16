@@ -21,12 +21,19 @@ type ClosableDatabase = TransactionalDatabase & Readonly<{
   migrate?: () => Promise<void>;
 }>;
 
+type DiscordClientRuntime = Readonly<{
+  login(token: string): Promise<unknown>;
+  destroy(): void;
+}>;
+
 export type HybridApplicationDependencies = Readonly<{
   config?: AppConfig;
   database?: ClosableDatabase;
   discordGateway?: DiscordRoleGateway;
-  discordClient?: Client;
+  discordClient?: DiscordClientRuntime;
+  roleSyncWorker?: RoleSyncWorker;
   workerOptions?: RoleSyncWorkerOptions;
+  workerPollIntervalMs?: number;
 }>;
 
 export type HybridApplication = Readonly<{
@@ -57,9 +64,20 @@ export async function createHybridApplication(dependencies: HybridApplicationDep
     logger
   };
   const client = dependencies.discordClient ?? createDiscordClient(services);
-  const gateway = dependencies.discordGateway ?? createDiscordRoleGateway(client);
-  const worker = createRoleSyncWorker(database, jobs, audit, gateway, dependencies.workerOptions ?? defaultWorkerOptions());
+  const gateway = dependencies.discordGateway ?? createDiscordRoleGateway(client as Client);
+  const worker = dependencies.roleSyncWorker ?? createRoleSyncWorker(
+    database,
+    jobs,
+    audit,
+    gateway,
+    dependencies.workerOptions ?? defaultWorkerOptions()
+  );
+  const workerPollIntervalMs = dependencies.workerPollIntervalMs ?? 5_000;
+  if (!Number.isInteger(workerPollIntervalMs) || workerPollIntervalMs < 1) {
+    throw new Error("Worker poll interval must be a positive integer.");
+  }
   let timer: NodeJS.Timeout | null = null;
+  let inFlightWorkerRun: Promise<void> | null = null;
   let started = false;
 
   return {
@@ -76,20 +94,35 @@ export async function createHybridApplication(dependencies: HybridApplicationDep
 
       await client.login(config.discordToken);
       started = true;
-      await runWorker(worker, logger);
-      timer = setInterval(() => { void runWorker(worker, logger); }, 5_000);
+      scheduleWorkerRun();
+      timer = setInterval(scheduleWorkerRun, workerPollIntervalMs);
       timer.unref();
     },
     stop: async () => {
+      started = false;
       if (timer) {
         clearInterval(timer);
         timer = null;
       }
+      await inFlightWorkerRun;
       client.destroy();
-      started = false;
       await database.close?.();
     }
   };
+
+  function scheduleWorkerRun(): void {
+    if (!started || inFlightWorkerRun) {
+      return;
+    }
+
+    const execution = runWorker(worker, logger);
+    inFlightWorkerRun = execution;
+    void execution.finally(() => {
+      if (inFlightWorkerRun === execution) {
+        inFlightWorkerRun = null;
+      }
+    });
+  }
 }
 
 function createProductionDatabase(config: AppConfig | undefined): ClosableDatabase {
