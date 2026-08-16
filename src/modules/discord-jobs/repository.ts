@@ -37,6 +37,16 @@ export type DiscordJobRepository = Readonly<{
   enqueueRoleSync(transaction: SqlTransaction, input: RoleSyncJobInput): Promise<DiscordJob>;
   listByDeduplicationKey(deduplicationKey: string): Promise<DiscordJob[]>;
   claimDiscordJobs(workerId: string, limit: number, leaseSeconds: number): Promise<DiscordJob[]>;
+  completeClaimedJob(workerId: string, jobId: string): Promise<boolean>;
+  retryClaimedJob(input: RetryClaimedJobInput): Promise<boolean>;
+}>;
+
+export type RetryClaimedJobInput = Readonly<{
+  workerId: string;
+  jobId: string;
+  errorCode: string;
+  delaySeconds: number;
+  finalAttempt: boolean;
 }>;
 
 type DiscordJobRow = DiscordJob;
@@ -45,7 +55,9 @@ export function createDiscordJobRepository(database: TransactionalDatabase): Dis
   return {
     enqueueRoleSync: async (transaction, input) => enqueueRoleSync(transaction, input),
     listByDeduplicationKey: async (deduplicationKey) => listByDeduplicationKey(database, deduplicationKey),
-    claimDiscordJobs: async (workerId, limit, leaseSeconds) => claimDiscordJobs(database, workerId, limit, leaseSeconds)
+    claimDiscordJobs: async (workerId, limit, leaseSeconds) => claimDiscordJobs(database, workerId, limit, leaseSeconds),
+    completeClaimedJob: async (workerId, jobId) => completeClaimedJob(database, workerId, jobId),
+    retryClaimedJob: async (input) => retryClaimedJob(database, input)
   };
 }
 
@@ -194,6 +206,44 @@ async function claimDiscordJobs(
 
     return claimed;
   });
+}
+
+async function completeClaimedJob(database: TransactionalDatabase, workerId: string, jobId: string): Promise<boolean> {
+  const result = await database.transaction(async (transaction) => transaction.query<{ id: string }>(
+    `UPDATE discord_jobs
+     SET status = 'COMPLETED',
+         completed_at = NOW(),
+         lease_owner = NULL,
+         lease_expires_at = NULL,
+         last_error_code = NULL,
+         updated_at = NOW()
+     WHERE id = $1 AND status = 'LEASED' AND lease_owner = $2
+     RETURNING id`,
+    [jobId, workerId]
+  ));
+
+  return Boolean(result.rows[0]);
+}
+
+async function retryClaimedJob(database: TransactionalDatabase, input: RetryClaimedJobInput): Promise<boolean> {
+  if (!input.errorCode.trim() || !Number.isInteger(input.delaySeconds) || input.delaySeconds < 1) {
+    throw new Error("Retry error code and delay must be valid.");
+  }
+
+  const result = await database.transaction(async (transaction) => transaction.query<{ id: string }>(
+    `UPDATE discord_jobs
+     SET status = CASE WHEN $1 THEN 'FAILED' ELSE 'QUEUED' END,
+         available_at = CASE WHEN $1 THEN available_at ELSE NOW() + ($2 * INTERVAL '1 second') END,
+         lease_owner = NULL,
+         lease_expires_at = NULL,
+         last_error_code = $3,
+         updated_at = NOW()
+     WHERE id = $4 AND status = 'LEASED' AND lease_owner = $5
+     RETURNING id`,
+    [input.finalAttempt, input.delaySeconds, input.errorCode, input.jobId, input.workerId]
+  ));
+
+  return Boolean(result.rows[0]);
 }
 
 async function insertRoleSyncJob(
