@@ -123,25 +123,40 @@ async function reconcileJob(
   }
 
   try {
-    const currentRoleIds = await gateway.getMemberRoles(plan.discordUserId);
-    const nextRoleIds = reconcileRoleIds(
-      currentRoleIds,
-      withMissingMappingUnavailable(plan.affected, missing),
-      plan.desired ? withMissingMappingUnavailable(plan.desired, missing) : null
-    );
-
-    if (!sameRoleIds(currentRoleIds, nextRoleIds)) {
-      await gateway.setMemberRoles(plan.discordUserId, nextRoleIds);
-    }
+    await applyRoleReconciliation(gateway, plan, missing);
     return missing.length > 0;
   } catch (error) {
     if (!isMissingRoleError(error)) {
       throw error;
     }
 
-    const availableMappings = mappings.filter((mapping) => mapping.discordRoleId && mapping.discordRoleState === "AVAILABLE");
-    await markMappingsUnavailable(database, audit, job.leagueId, availableMappings);
+    const missingAfterError = await missingRoleMappings(gateway, mappings);
+
+    if (missingAfterError.length === 0) {
+      throw error;
+    }
+
+    const allMissing = uniqueMappings([...missing, ...missingAfterError]);
+    await markMappingsUnavailable(database, audit, job.leagueId, allMissing);
+    await applyRoleReconciliation(gateway, plan, allMissing);
     return true;
+  }
+}
+
+async function applyRoleReconciliation(
+  gateway: DiscordRoleGateway,
+  plan: ReconciliationPlan,
+  missing: readonly TeamRoleMapping[]
+): Promise<void> {
+  const currentRoleIds = await gateway.getMemberRoles(plan.discordUserId);
+  const nextRoleIds = reconcileRoleIds(
+    currentRoleIds,
+    withMissingMappingUnavailable(plan.affected, missing),
+    plan.desired ? withMissingMappingUnavailable(plan.desired, missing) : null
+  );
+
+  if (!sameRoleIds(currentRoleIds, nextRoleIds)) {
+    await gateway.setMemberRoles(plan.discordUserId, nextRoleIds);
   }
 }
 

@@ -120,6 +120,42 @@ describe("RoleSyncWorker", () => {
     }
   });
 
+  it("re-identifies a role deleted after preflight without disabling the prior valid mapping", async () => {
+    const fixture = await createFixture();
+
+    try {
+      const first = await createAssignedPlayer(fixture, "Northstar", "role-old", "player-1");
+      await fixture.rosters.endTeamMembership(fixture.owner, { membershipId: first.membership.id });
+      const secondTeam = await fixture.teams.createTeam(
+        fixture.owner,
+        { name: "Southstar", rosterCap: 12, discordRoleId: "role-new" }
+      );
+      await fixture.rosters.assignPlayerToTeam(
+        fixture.owner,
+        { teamId: secondTeam.id, playerId: first.playerId, role: "PLAYER" }
+      );
+      const gateway = new FakeDiscordRoleGateway(["role-old", "role-new", "unrelated-role"]);
+      gateway.roles.set("player-1", ["role-old", "unrelated-role"]);
+      gateway.setFailure = Object.assign(new Error("role disappeared"), { code: "UNKNOWN_ROLE" });
+      gateway.removeRoleOnSetFailure = "role-new";
+      const worker = createWorker(fixture, gateway);
+
+      await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 2, completed: 2, recoveries: 1 });
+      expect(gateway.setCalls).toEqual([{ discordUserId: "player-1", roleIds: ["unrelated-role"] }]);
+      await expect(fixture.teams.getTeamDashboard(fixture.owner, first.team.id))
+        .resolves.toMatchObject({ discordRoleState: "AVAILABLE" });
+      await expect(fixture.teams.getTeamDashboard(fixture.owner, secondTeam.id))
+        .resolves.toMatchObject({ discordRoleState: "UNAVAILABLE" });
+      const firstTeamAudit = await fixture.audit.listEntityHistory(fixture.owner, "team", first.team.id);
+      expect(firstTeamAudit.map((event) => event.action)).not.toContain("discord.role_unavailable");
+      await expect(fixture.audit.listEntityHistory(fixture.owner, "team", secondTeam.id))
+        .resolves.toMatchObject([{ action: "team.created" }, { action: "discord.role_unavailable" }]);
+      expect(await activeRosterCount(fixture.database, secondTeam.id)).toBe(1);
+    } finally {
+      await fixture.database.dispose();
+    }
+  });
+
   it("uses bounded retries for gateway failures without rolling roster state back", async () => {
     const fixture = await createFixture();
 
@@ -242,6 +278,7 @@ class FakeDiscordRoleGateway implements DiscordRoleGateway {
   readonly roles = new Map<string, string[]>();
   readonly setCalls: Array<{ discordUserId: string; roleIds: string[] }> = [];
   setFailure: Error | null = null;
+  removeRoleOnSetFailure: string | null = null;
   private readonly existingRoles: Set<string>;
 
   constructor(existingRoles: Iterable<string> = []) {
@@ -254,7 +291,12 @@ class FakeDiscordRoleGateway implements DiscordRoleGateway {
 
   async setMemberRoles(discordUserId: string, roleIds: readonly string[]): Promise<void> {
     if (this.setFailure) {
-      throw this.setFailure;
+      const failure = this.setFailure;
+      if (this.removeRoleOnSetFailure) {
+        this.existingRoles.delete(this.removeRoleOnSetFailure);
+        this.setFailure = null;
+      }
+      throw failure;
     }
     this.roles.set(discordUserId, [...roleIds]);
     this.setCalls.push({ discordUserId, roleIds: [...roleIds] });
