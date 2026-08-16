@@ -11,7 +11,7 @@ import {
   takeComponentState
 } from "./ui/ids.js";
 import { renderLeagueDashboard } from "./ui/league-dashboard.js";
-import { renderRegistrationDecisionCard, renderRegistrationPanel } from "./ui/registration-panel.js";
+import { renderPendingRegistrationCard, renderRegistrationDecisionCard, renderRegistrationPanel } from "./ui/registration-panel.js";
 import { renderSetupWizard } from "./ui/setup-wizard.js";
 import { renderTeamDashboard } from "./ui/team-dashboard.js";
 import type {
@@ -44,7 +44,7 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
     throw new DomainError("ACTION_EXPIRED", "That control has expired. Open `/league` for a fresh dashboard.");
   }
 
-  if ((route.action === "team.detail" || route.action === "registration.select") && !route.entityId) {
+  if ((route.action === "team.detail" || route.action === "registration.select" || route.action === "roster.membership.select") && !route.entityId) {
     route = selectedRoute(interaction, route);
   }
 
@@ -84,11 +84,33 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
         inputs: [{ customId: "display-name", label: "Display name", required: true, placeholder: interaction.user.displayName }]
       });
       return;
-    case "registration.submit":
+    case "registration.submit": {
       requireContext(context);
       await interaction.deferUpdate();
-      await services.registrations.requestRegistration(context, { displayName: textField(interaction, "display-name") });
-      await interaction.editReply({ content: "Registration submitted for staff review.", ephemeral: true });
+      const registration = await services.registrations.requestRegistration(context, { displayName: textField(interaction, "display-name") });
+      await interaction.editReply(renderPendingRegistrationCard({ actorId: interaction.user.id, registrationId: registration.id }));
+      return;
+    }
+    case "registration.withdraw":
+      requireContext(context);
+      requireEntity(route);
+      await interaction.deferUpdate();
+      await services.registrations.getRegistration(context, route.entityId);
+      await interaction.editReply(renderConfirmation({
+        actorId: interaction.user.id,
+        action: "registration.withdraw.confirm",
+        entityId: route.entityId,
+        title: "Withdraw registration?",
+        detail: "Your pending request will be withdrawn. You can submit a new request later."
+      }));
+      return;
+    case "registration.withdraw.confirm":
+      requireContext(context);
+      requireEntity(route);
+      await interaction.deferUpdate();
+      await services.registrations.getRegistration(context, route.entityId);
+      await services.registrations.withdrawRegistration(context, route.entityId);
+      await interaction.editReply({ content: "Registration withdrawn.", ephemeral: true });
       return;
     case "registrations":
       requireContext(context);
@@ -134,17 +156,21 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
       await services.registrations.reviewRegistration(context, { registrationId: route.entityId, decision: "DECLINE" });
       await interaction.editReply({ content: "Registration declined.", ephemeral: true });
       return;
-    case "team.detail":
+    case "team.detail": {
       requireContext(context);
       requireEntity(route);
       await interaction.deferUpdate();
+      const team = await services.teams.getTeamDashboard(context, route.entityId);
+      const canManageRoster = context.actor.managedTeamIds.includes(route.entityId)
+        || context.actor.roles.includes("OWNER") || context.actor.roles.includes("ADMINISTRATOR");
       await interaction.editReply(renderTeamDashboard({
-        team: await services.teams.getTeamDashboard(context, route.entityId),
+        team,
         actorId: interaction.user.id,
-        canManageRoster: context.actor.managedTeamIds.includes(route.entityId)
-          || context.actor.roles.includes("OWNER") || context.actor.roles.includes("ADMINISTRATOR")
+        canManageRoster,
+        memberships: canManageRoster ? await services.rosters.listActiveTeamMemberships(context, team.id) : []
       }));
       return;
+    }
     case "roster.assign":
       requireContext(context);
       requireEntity(route);
@@ -193,6 +219,7 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
       requireContext(context);
       requireEntity(route);
       await interaction.deferUpdate();
+      await services.rosters.getActiveTeamMembership(context, route.entityId);
       await interaction.editReply(renderConfirmation({
         actorId: interaction.user.id,
         action: "roster.release.confirm",
@@ -205,6 +232,7 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
       requireContext(context);
       requireEntity(route);
       await interaction.deferUpdate();
+      await services.rosters.getActiveTeamMembership(context, route.entityId);
       await services.rosters.endTeamMembership(context, { membershipId: route.entityId });
       await interaction.editReply({ content: "Player released. Discord role sync is queued.", ephemeral: true });
       return;
@@ -246,8 +274,16 @@ async function renderDashboard(
   const teams = await services.teams.listTeams(context);
   const canReview = context.actor.roles.some((role) => role === "OWNER" || role === "ADMINISTRATOR" || role === "STAFF");
   const pendingRegistrations = canReview ? await services.registrations.listPendingRegistrations(context) : [];
+  const ownPendingRegistration = await services.registrations.getPendingRegistrationForActor(context);
 
-  return renderLeagueDashboard({ context, canManageGuild: false, teams, pendingRegistrations, actorId: interaction.user.id });
+  return renderLeagueDashboard({
+    context,
+    canManageGuild: false,
+    teams,
+    pendingRegistrations,
+    ...(ownPendingRegistration ? { pendingRegistrationId: ownPendingRegistration.id } : {}),
+    actorId: interaction.user.id
+  });
 }
 
 function selectedRoute(interaction: ComponentInteractionLike, parent: ComponentRoute): ComponentRoute {
@@ -261,6 +297,9 @@ function selectedRoute(interaction: ComponentInteractionLike, parent: ComponentR
     throw new DomainError("ACTION_EXPIRED", "That selection is no longer valid.");
   }
   if (parent.action === "registration.select" && route.action !== "registration.approve") {
+    throw new DomainError("ACTION_EXPIRED", "That selection is no longer valid.");
+  }
+  if (parent.action === "roster.membership.select" && route.action !== "roster.release") {
     throw new DomainError("ACTION_EXPIRED", "That selection is no longer valid.");
   }
   return route;

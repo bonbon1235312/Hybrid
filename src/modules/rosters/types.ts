@@ -27,4 +27,6 @@ export type EndTeamMembershipInput = Readonly<{
 export type RosterService = Readonly<{
   assignPlayerToTeam(context: LeagueContext, input: AssignPlayerToTeamInput): Promise<TeamMembership>;
   endTeamMembership(context: LeagueContext, input: EndTeamMembershipInput): Promise<TeamMembership>;
+  listActiveTeamMemberships(context: LeagueContext, teamId: string): Promise<TeamMembership[]>;
+  getActiveTeamMembership(context: LeagueContext, membershipId: string): Promise<TeamMembership>;
 }>;

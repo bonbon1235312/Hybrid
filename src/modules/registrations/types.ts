@@ -40,5 +40,6 @@ export type RegistrationService = Readonly<{
   withdrawRegistration(context: LeagueContext, registrationId: string): Promise<Registration>;
   reviewRegistration(context: LeagueContext, input: ReviewRegistrationInput): Promise<Registration>;
   getRegistration(context: LeagueContext, registrationId: string): Promise<Registration>;
+  getPendingRegistrationForActor(context: LeagueContext): Promise<Registration | null>;
   listPendingRegistrations(context: LeagueContext): Promise<RegistrationSummary[]>;
 }>;

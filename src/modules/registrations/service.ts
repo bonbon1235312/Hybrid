@@ -25,6 +25,7 @@ export function createRegistrationService(
     withdrawRegistration: async (context, registrationId) => withdrawRegistration(database, audit, context, registrationId),
     reviewRegistration: async (context, input) => reviewRegistration(database, audit, context, input),
     getRegistration: async (context, registrationId) => getRegistration(database, context, registrationId),
+    getPendingRegistrationForActor: async (context) => getPendingRegistrationForActor(database, context),
     listPendingRegistrations: async (context) => listPendingRegistrations(database, context)
   };
 }
@@ -188,6 +189,34 @@ async function getRegistration(
   registrationId: string
 ): Promise<Registration> {
   return database.transaction(async (transaction) => findRegistration(transaction, context.leagueId, registrationId, false));
+}
+
+async function getPendingRegistrationForActor(
+  database: TransactionalDatabase,
+  context: LeagueContext
+): Promise<Registration | null> {
+  const result = await database.transaction(async (transaction) => transaction.query<RegistrationRow>(
+    `SELECT
+       registration_requests.id,
+       registration_requests.league_id AS "leagueId",
+       registration_requests.league_member_id AS "leagueMemberId",
+       registration_requests.display_name AS "displayName",
+       registration_requests.status,
+       registration_requests.requested_at AS "requestedAt",
+       registration_requests.reviewed_at AS "reviewedAt",
+       registration_requests.reviewed_by_member_id AS "reviewedByMemberId",
+       registration_requests.declined_reason AS "declinedReason"
+     FROM registration_requests
+     JOIN league_members ON league_members.id = registration_requests.league_member_id
+     WHERE registration_requests.league_id = $1
+       AND league_members.discord_user_id = $2
+       AND registration_requests.status = 'PENDING'
+     ORDER BY registration_requests.requested_at DESC, registration_requests.id DESC
+     LIMIT 1`,
+    [context.leagueId, context.actor.discordUserId]
+  ));
+
+  return result.rows[0] ?? null;
 }
 
 async function listPendingRegistrations(

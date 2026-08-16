@@ -9,6 +9,7 @@ export type LeagueDashboardInput = Readonly<{
   canManageGuild: boolean;
   teams: readonly TeamDashboard[];
   pendingRegistrations: readonly RegistrationSummary[];
+  pendingRegistrationId?: string;
   actorId?: string;
 }>;
 
@@ -29,9 +30,9 @@ export function renderLeagueDashboard(input: LeagueDashboardInput): InteractionR
   }
 
   const context = input.context;
-  const actions: ReplyComponent[] = [
-    { data: { type: "button", label: "Register", style: "primary", customId: encodeComponentId({ action: "registration.request", actorId }) } }
-  ];
+  const actions: ReplyComponent[] = input.pendingRegistrationId
+    ? [{ data: { type: "button", label: "Withdraw registration", style: "danger", customId: encodeComponentId({ action: "registration.withdraw", entityId: input.pendingRegistrationId, actorId }) } }]
+    : [{ data: { type: "button", label: "Register", style: "primary", customId: encodeComponentId({ action: "registration.request", actorId }) } }];
 
   if (context.actor.roles.includes("OWNER") || context.actor.roles.includes("ADMINISTRATOR") || context.actor.roles.includes("STAFF")) {
     actions.push({ data: { type: "button", label: `Registrations (${input.pendingRegistrations.length})`, style: "secondary", customId: encodeComponentId({ action: "registrations", actorId }) } });

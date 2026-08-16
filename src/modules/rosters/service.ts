@@ -34,8 +34,52 @@ export function createRosterService(
 ): RosterService {
   return {
     assignPlayerToTeam: async (context, input) => assignPlayerToTeam(database, audit, jobs, context, input),
-    endTeamMembership: async (context, input) => endTeamMembership(database, audit, jobs, context, input)
+    endTeamMembership: async (context, input) => endTeamMembership(database, audit, jobs, context, input),
+    listActiveTeamMemberships: async (context, teamId) => listActiveTeamMemberships(database, context, teamId),
+    getActiveTeamMembership: async (context, membershipId) => getActiveTeamMembership(database, context, membershipId)
   };
+}
+
+async function listActiveTeamMemberships(
+  database: TransactionalDatabase,
+  context: LeagueContext,
+  teamId: string
+): Promise<TeamMembership[]> {
+  return withTransaction(database, async (transaction) => {
+    const team = await findTeam(transaction, context.leagueId, teamId, false);
+    requirePermission(context, "ROSTER_MANAGE", team.id);
+    const result = await transaction.query<TeamMembershipRow>(
+      `SELECT
+         id,
+         league_id AS "leagueId",
+         league_member_id AS "leagueMemberId",
+         team_id AS "teamId",
+         membership_role AS role,
+         status,
+         ended_at AS "endedAt",
+         ended_by_member_id AS "endedByMemberId"
+       FROM team_memberships
+       WHERE league_id = $1 AND team_id = $2 AND status = 'ACTIVE'
+       ORDER BY id`,
+      [context.leagueId, team.id]
+    );
+    return result.rows;
+  });
+}
+
+async function getActiveTeamMembership(
+  database: TransactionalDatabase,
+  context: LeagueContext,
+  membershipId: string
+): Promise<TeamMembership> {
+  return withTransaction(database, async (transaction) => {
+    const membership = await findMembership(transaction, context.leagueId, membershipId, false);
+    requirePermission(context, "ROSTER_MANAGE", membership.teamId);
+    if (membership.status !== "ACTIVE") {
+      throw new DomainError("TEAM_MEMBERSHIP_NOT_ACTIVE", "This team membership is no longer active.");
+    }
+    return membership;
+  });
 }
 
 async function assignPlayerToTeam(

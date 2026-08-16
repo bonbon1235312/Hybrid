@@ -56,6 +56,8 @@ export type ComponentAction =
   | "team.detail"
   | "registration.request"
   | "registration.submit"
+  | "registration.withdraw"
+  | "registration.withdraw.confirm"
   | "registrations"
   | "registration.select"
   | "registration.approve"
@@ -65,6 +67,7 @@ export type ComponentAction =
   | "roster.assign"
   | "roster.assign.submit"
   | "roster.assign.confirm"
+  | "roster.membership.select"
   | "roster.release"
   | "roster.release.confirm";
 

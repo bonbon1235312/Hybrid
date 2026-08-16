@@ -64,6 +64,25 @@ describe("RegistrationService", () => {
     }
   });
 
+  it("resolves only the current actor's pending registration for dashboard withdrawal", async () => {
+    const database = await createTestDatabase();
+    const leagues = createLeagueService(database);
+    const audit = createAuditRepository(database);
+    const registrations = createRegistrationService(database, audit);
+
+    try {
+      const ownerContext = await leagues.bootstrapLeague(bootstrapInput("guild-1", "owner-1"));
+      const playerContext = await resolvePlayerContext(leagues, "guild-1", "player-1");
+      const registration = await registrations.requestRegistration(playerContext, { displayName: "Player One" });
+
+      await expect(registrations.getPendingRegistrationForActor(playerContext))
+        .resolves.toMatchObject({ id: registration.id, status: "PENDING" });
+      await expect(registrations.getPendingRegistrationForActor(ownerContext)).resolves.toBeNull();
+    } finally {
+      await database.dispose();
+    }
+  });
+
   it("keeps pending queues and registration detail tenant-scoped", async () => {
     const database = await createTestDatabase();
     const leagues = createLeagueService(database);

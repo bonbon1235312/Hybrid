@@ -39,3 +39,16 @@ export function renderRegistrationDecisionCard(input: Readonly<{ actorId: string
     }]
   };
 }
+
+export function renderPendingRegistrationCard(input: Readonly<{ actorId: string; registrationId: string }>): InteractionReplyOptions {
+  return {
+    content: "**Registration submitted**\nYour request is pending staff review. You can withdraw it while it is still pending.",
+    ephemeral: true,
+    components: [{
+      components: [
+        { data: { type: "button", label: "Withdraw registration", style: "danger", customId: encodeComponentId({ action: "registration.withdraw", entityId: input.registrationId, actorId: input.actorId }) } },
+        { data: { type: "button", label: "Home", style: "secondary", customId: encodeComponentId({ action: "home", actorId: input.actorId }) } }
+      ]
+    }]
+  };
+}

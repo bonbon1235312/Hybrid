@@ -25,6 +25,23 @@ describe("renderLeagueDashboard", () => {
     expect(buttonLabels(reply)).toContain("Set up Hybrid");
     expect(reply.ephemeral).toBe(true);
   });
+
+  it("shows an actor-bound withdrawal route instead of a second registration request when the actor is pending", () => {
+    const reply = renderLeagueDashboard({
+      context: {
+        leagueId: "league-1",
+        discordGuildId: "guild-1",
+        actor: { discordUserId: "player-1", leagueMemberId: "member-1", role: "PLAYER", roles: ["PLAYER"], managedTeamIds: [] }
+      },
+      canManageGuild: false,
+      teams: [],
+      pendingRegistrations: [],
+      pendingRegistrationId: "registration-1"
+    });
+
+    expect(buttonLabels(reply)).toContain("Withdraw registration");
+    expect(buttonLabels(reply)).not.toContain("Register");
+  });
 });
 
 function buttonLabels(reply: { components?: readonly { components: readonly { data?: { label?: string } }[] }[] }): string[] {
