@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createAuditRepository } from "../../../src/modules/audit/repository.js";
 import { createLeagueService } from "../../../src/modules/league/service.js";
 import { createTeamService } from "../../../src/modules/teams/service.js";
+import type { TransactionalDatabase } from "../../../src/platform/database.js";
 import { createTestDatabase } from "../../../src/platform/test-db.js";
 
 describe("TeamService", () => {
@@ -85,6 +86,48 @@ describe("TeamService", () => {
     }
   });
 
+  it("maps a parallel normalized-name collision to a domain error without a second audit event", async () => {
+    const database = await createTestDatabase();
+    const leagues = createLeagueService(database);
+    const audit = createAuditRepository(database);
+    const teams = createTeamService(hideTeamAvailabilityChecks(database), audit);
+
+    try {
+      const ownerContext = await leagues.bootstrapLeague(bootstrapInput("guild-1", "owner-1"));
+      const results = await Promise.allSettled([
+        teams.createTeam(ownerContext, { name: "North Star", rosterCap: 12 }),
+        teams.createTeam(ownerContext, { name: " north   star ", rosterCap: 12 })
+      ]);
+
+      expectOneWinnerAndDomainError(results, "TEAM_ALREADY_EXISTS");
+      expect(await rowCount(database, "teams")).toBe(1);
+      expect(await actionCount(database, "team.created")).toBe(1);
+    } finally {
+      await database.dispose();
+    }
+  });
+
+  it("maps a parallel Discord-role collision to a domain error without a second audit event", async () => {
+    const database = await createTestDatabase();
+    const leagues = createLeagueService(database);
+    const audit = createAuditRepository(database);
+    const teams = createTeamService(hideTeamAvailabilityChecks(database), audit);
+
+    try {
+      const ownerContext = await leagues.bootstrapLeague(bootstrapInput("guild-1", "owner-1"));
+      const results = await Promise.allSettled([
+        teams.createTeam(ownerContext, { name: "Northstar", rosterCap: 12, discordRoleId: "role-1" }),
+        teams.createTeam(ownerContext, { name: "Southstar", rosterCap: 12, discordRoleId: "role-1" })
+      ]);
+
+      expectOneWinnerAndDomainError(results, "DISCORD_ROLE_ALREADY_MAPPED");
+      expect(await rowCount(database, "teams")).toBe(1);
+      expect(await actionCount(database, "team.created")).toBe(1);
+    } finally {
+      await database.dispose();
+    }
+  });
+
   it("keeps team creation unavailable to staff and writes no team records", async () => {
     const database = await createTestDatabase();
     const leagues = createLeagueService(database);
@@ -146,4 +189,37 @@ function bootstrapInput(discordGuildId: string, discordUserId: string) {
 async function rowCount(database: Awaited<ReturnType<typeof createTestDatabase>>, table: string): Promise<number> {
   const result = await database.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM ${table}`);
   return Number(result.rows[0]?.count);
+}
+
+async function actionCount(database: Awaited<ReturnType<typeof createTestDatabase>>, action: string): Promise<number> {
+  const result = await database.query<{ count: string }>(
+    "SELECT COUNT(*)::text AS count FROM audit_events WHERE action = $1",
+    [action]
+  );
+  return Number(result.rows[0]?.count);
+}
+
+function expectOneWinnerAndDomainError(
+  results: PromiseSettledResult<unknown>[],
+  code: "TEAM_ALREADY_EXISTS" | "DISCORD_ROLE_ALREADY_MAPPED"
+): void {
+  const fulfilled = results.filter((result) => result.status === "fulfilled");
+  const rejected = results.filter((result) => result.status === "rejected");
+
+  expect(fulfilled).toHaveLength(1);
+  expect(rejected).toHaveLength(1);
+  expect(rejected[0]).toMatchObject({ reason: { code } });
+}
+
+function hideTeamAvailabilityChecks(database: TransactionalDatabase): TransactionalDatabase {
+  return {
+    transaction: async (work) => database.transaction(async (transaction) => work({
+      query: async (statement, parameters) => {
+        if (statement.startsWith("SELECT id FROM teams WHERE league_id")) {
+          return { rows: [] };
+        }
+        return transaction.query(statement, parameters);
+      }
+    }))
+  };
 }

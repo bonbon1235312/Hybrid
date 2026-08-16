@@ -39,28 +39,39 @@ async function createTeam(
   return withTransaction(database, async (transaction) => {
     await ensureTeamIsAvailable(transaction, context.leagueId, team.normalizedName, team.discordRoleId);
 
-    const result = await transaction.query<TeamRow>(
-      `INSERT INTO teams (
-        id, league_id, name, normalized_name, roster_cap, status, discord_role_id, discord_role_state
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING
-        id,
-        name,
-        roster_cap AS "rosterCap",
-        status,
-        discord_role_id AS "discordRoleId",
-        discord_role_state AS "discordRoleState"`,
-      [
-        randomUUID(),
-        context.leagueId,
-        team.name,
-        team.normalizedName,
-        team.rosterCap,
-        "ACTIVE",
-        team.discordRoleId ?? null,
-        team.discordRoleId ? "AVAILABLE" : "UNMAPPED"
-      ]
-    );
+    let result: { rows: TeamRow[] };
+
+    try {
+      result = await transaction.query<TeamRow>(
+        `INSERT INTO teams (
+          id, league_id, name, normalized_name, roster_cap, status, discord_role_id, discord_role_state
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING
+          id,
+          name,
+          roster_cap AS "rosterCap",
+          status,
+          discord_role_id AS "discordRoleId",
+          discord_role_state AS "discordRoleState"`,
+        [
+          randomUUID(),
+          context.leagueId,
+          team.name,
+          team.normalizedName,
+          team.rosterCap,
+          "ACTIVE",
+          team.discordRoleId ?? null,
+          team.discordRoleId ? "AVAILABLE" : "UNMAPPED"
+        ]
+      );
+    } catch (error) {
+      const domainError = toTeamConflictError(error);
+
+      if (domainError) {
+        throw domainError;
+      }
+      throw error;
+    }
     const inserted = result.rows[0];
 
     if (!inserted) {
@@ -271,4 +282,29 @@ function teamAuditState(team: TeamRow): Record<string, unknown> {
     status: team.status,
     ...(team.discordRoleId ? { discordRoleId: team.discordRoleId } : {})
   };
+}
+
+function toTeamConflictError(error: unknown): DomainError | null {
+  if (!isUniqueViolation(error)) {
+    return null;
+  }
+
+  const constraint = error.constraint ?? "";
+  const message = error.message ?? "";
+
+  if (constraint === "teams_league_name_key" || message.includes("teams_league_name_key")) {
+    return new DomainError("TEAM_ALREADY_EXISTS", "A team with this name already exists.");
+  }
+  if (constraint === "active_discord_role_per_league" || message.includes("active_discord_role_per_league")) {
+    return new DomainError("DISCORD_ROLE_ALREADY_MAPPED", "This Discord role is already mapped to a team.");
+  }
+
+  return null;
+}
+
+function isUniqueViolation(error: unknown): error is { code?: string; constraint?: string; message?: string } {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: unknown }).code === "23505";
 }
