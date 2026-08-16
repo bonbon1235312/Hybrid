@@ -120,17 +120,20 @@ async function reconcileJob(
 
   if (missing.length > 0) {
     await markMappingsUnavailable(database, audit, job.leagueId, missing);
-    return true;
   }
 
   try {
     const currentRoleIds = await gateway.getMemberRoles(plan.discordUserId);
-    const nextRoleIds = reconcileRoleIds(currentRoleIds, plan.affected, plan.desired);
+    const nextRoleIds = reconcileRoleIds(
+      currentRoleIds,
+      withMissingMappingUnavailable(plan.affected, missing),
+      plan.desired ? withMissingMappingUnavailable(plan.desired, missing) : null
+    );
 
     if (!sameRoleIds(currentRoleIds, nextRoleIds)) {
       await gateway.setMemberRoles(plan.discordUserId, nextRoleIds);
     }
-    return false;
+    return missing.length > 0;
   } catch (error) {
     if (!isMissingRoleError(error)) {
       throw error;
@@ -140,6 +143,17 @@ async function reconcileJob(
     await markMappingsUnavailable(database, audit, job.leagueId, availableMappings);
     return true;
   }
+}
+
+function withMissingMappingUnavailable(
+  mapping: TeamRoleMapping,
+  missing: readonly TeamRoleMapping[]
+): TeamRoleMapping {
+  if (!missing.some((candidate) => candidate.teamId === mapping.teamId)) {
+    return mapping;
+  }
+
+  return { ...mapping, discordRoleState: "UNAVAILABLE" };
 }
 
 async function loadPlan(database: TransactionalDatabase, job: DiscordJob): Promise<ReconciliationPlan | null> {

@@ -89,6 +89,37 @@ describe("RoleSyncWorker", () => {
     }
   });
 
+  it("removes a prior mapped role when the transfer target has a deleted mapping", async () => {
+    const fixture = await createFixture();
+
+    try {
+      const first = await createAssignedPlayer(fixture, "Northstar", "role-old", "player-1");
+      await fixture.rosters.endTeamMembership(fixture.owner, { membershipId: first.membership.id });
+      const secondTeam = await fixture.teams.createTeam(
+        fixture.owner,
+        { name: "Southstar", rosterCap: 12, discordRoleId: "role-deleted" }
+      );
+      const secondMembership = await fixture.rosters.assignPlayerToTeam(
+        fixture.owner,
+        { teamId: secondTeam.id, playerId: first.playerId, role: "PLAYER" }
+      );
+      const gateway = new FakeDiscordRoleGateway(["role-old", "unrelated-role"]);
+      gateway.roles.set("player-1", ["role-old", "unrelated-role"]);
+      const worker = createWorker(fixture, gateway);
+
+      await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 2, completed: 2, recoveries: 1 });
+      expect(gateway.setCalls).toEqual([{ discordUserId: "player-1", roleIds: ["unrelated-role"] }]);
+      await expect(fixture.teams.getTeamDashboard(fixture.owner, secondTeam.id))
+        .resolves.toMatchObject({ discordRoleState: "UNAVAILABLE" });
+      await expect(fixture.audit.listEntityHistory(fixture.owner, "team", secondTeam.id))
+        .resolves.toMatchObject([{ action: "team.created" }, { action: "discord.role_unavailable" }]);
+      expect(await activeRosterCount(fixture.database, secondTeam.id)).toBe(1);
+      expect(await jobStatus(fixture.database, `role-sync:${secondMembership.id}`)).toBe("COMPLETED");
+    } finally {
+      await fixture.database.dispose();
+    }
+  });
+
   it("uses bounded retries for gateway failures without rolling roster state back", async () => {
     const fixture = await createFixture();
 
