@@ -174,7 +174,7 @@ async function findTeam(
 }
 
 async function findApprovedPlayer(transaction: SqlTransaction, leagueId: string, playerId: string): Promise<PlayerRow> {
-  const player = await findPlayer(transaction, leagueId, playerId);
+  const player = await findActivePlayer(transaction, leagueId, playerId);
   const approved = await transaction.query<{ id: string }>(
     `SELECT id
      FROM registration_requests
@@ -185,6 +185,27 @@ async function findApprovedPlayer(transaction: SqlTransaction, leagueId: string,
   );
 
   if (!approved.rows[0]) {
+    throw new DomainError("PLAYER_NOT_APPROVED", "This player does not have an approved registration.");
+  }
+  return player;
+}
+
+async function findActivePlayer(transaction: SqlTransaction, leagueId: string, playerId: string): Promise<PlayerRow> {
+  const result = await transaction.query<PlayerRow>(
+    `SELECT
+       league_members.id,
+       discord_users.discord_user_id AS "discordUserId"
+     FROM league_members
+     JOIN discord_users ON discord_users.discord_user_id = league_members.discord_user_id
+     WHERE league_members.league_id = $1
+       AND league_members.id = $2
+       AND league_members.status = 'ACTIVE'
+     FOR UPDATE`,
+    [leagueId, playerId]
+  );
+  const player = result.rows[0];
+
+  if (!player) {
     throw new DomainError("PLAYER_NOT_APPROVED", "This player does not have an approved registration.");
   }
   return player;

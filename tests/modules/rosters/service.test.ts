@@ -73,6 +73,32 @@ describe("RosterService", () => {
     }
   });
 
+  it.each(["LEFT", "BANNED"] as const)(
+    "rejects a %s player with historic approval before writing roster work",
+    async (status) => {
+      const fixture = await createFixture();
+
+      try {
+        const team = await fixture.teams.createTeam(fixture.owner, { name: "Northstar", rosterCap: 12 });
+        const playerId = await approvePlayer(fixture, "player-1");
+        await fixture.database.query(
+          "UPDATE league_members SET status = $1 WHERE id = $2",
+          [status, playerId]
+        );
+
+        await expect(fixture.rosters.assignPlayerToTeam(
+          fixture.owner,
+          { teamId: team.id, playerId, role: "PLAYER" }
+        )).rejects.toMatchObject({ code: "PLAYER_NOT_APPROVED" });
+        expect(await activeRosterCount(fixture.database, team.id)).toBe(0);
+        expect(await jobCount(fixture.database)).toBe(0);
+        expect(await rosterAuditCount(fixture.database)).toBe(0);
+      } finally {
+        await fixture.database.dispose();
+      }
+    }
+  );
+
   it("allows a manager to act only on their managed team", async () => {
     const fixture = await createFixture();
 
