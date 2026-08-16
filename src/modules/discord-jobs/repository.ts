@@ -49,7 +49,9 @@ export type RetryClaimedJobInput = Readonly<{
   finalAttempt: boolean;
 }>;
 
-type DiscordJobRow = DiscordJob;
+type DiscordJobRow = Omit<DiscordJob, "payload"> & Readonly<{
+  payload: RoleSyncPayload | string;
+}>;
 
 export function createDiscordJobRepository(database: TransactionalDatabase): DiscordJobRepository {
   return {
@@ -97,7 +99,7 @@ async function coalesceRoleSyncJob(
 ): Promise<DiscordJob> {
   if (job.status === "COMPLETED") {
     await transaction.query(
-      "UPDATE discord_jobs SET deduplication_key = $1, updated_at = NOW() WHERE id = $2",
+      "UPDATE discord_jobs SET deduplication_key = ?, updated_at = UTC_TIMESTAMP(3) WHERE id = ?",
       [`${deduplicationKey}:completed:${job.id}`, job.id]
     );
     const inserted = await insertRoleSyncJob(transaction, leagueId, deduplicationKey, payload);
@@ -108,26 +110,20 @@ async function coalesceRoleSyncJob(
     return inserted;
   }
 
-  const coalesced = await transaction.query<DiscordJobRow>(
-    `WITH updated_job AS (
-       UPDATE discord_jobs
-       SET payload = $1::jsonb,
-           status = CASE WHEN status = 'FAILED' THEN 'QUEUED' ELSE status END,
-           available_at = CASE WHEN status = 'FAILED' THEN NOW() ELSE available_at END,
-           updated_at = NOW()
-       WHERE id = $2
-       RETURNING *
-     )
-     ${jobSelectColumns}
-     FROM updated_job`,
+  const coalesced = await transaction.query(
+    `UPDATE discord_jobs
+     SET payload = ?,
+         status = CASE WHEN status = 'FAILED' THEN 'QUEUED' ELSE status END,
+         available_at = CASE WHEN status = 'FAILED' THEN UTC_TIMESTAMP(3) ELSE available_at END,
+         updated_at = UTC_TIMESTAMP(3)
+     WHERE id = ?`,
     [JSON.stringify(payload), job.id]
   );
-  const updated = coalesced.rows[0];
 
-  if (!updated) {
+  if (coalesced.affectedRows !== 1) {
     throw new Error("Unable to coalesce role-sync work.");
   }
-  return updated;
+  return findJobById(transaction, job.id);
 }
 
 async function findJobByDeduplicationKey(
@@ -137,23 +133,37 @@ async function findJobByDeduplicationKey(
   const existing = await transaction.query<DiscordJobRow>(
     `${jobSelectColumns}
      FROM discord_jobs
-     WHERE deduplication_key = $1
+     WHERE deduplication_key = ?
      FOR UPDATE`,
     [deduplicationKey]
   );
 
-  return existing.rows[0] ?? null;
+  return existing.rows[0] ? toDiscordJob(existing.rows[0]) : null;
+}
+
+async function findJobById(transaction: SqlTransaction, jobId: string): Promise<DiscordJob> {
+  const result = await transaction.query<DiscordJobRow>(
+    `${jobSelectColumns}
+     FROM discord_jobs
+     WHERE id = ?`,
+    [jobId]
+  );
+  const job = result.rows[0];
+  if (!job) {
+    throw new Error("Unable to resolve durable role-sync work.");
+  }
+  return toDiscordJob(job);
 }
 
 async function listByDeduplicationKey(database: TransactionalDatabase, deduplicationKey: string): Promise<DiscordJob[]> {
   const result = await database.transaction(async (transaction) => transaction.query<DiscordJobRow>(
     `${jobSelectColumns}
      FROM discord_jobs
-     WHERE deduplication_key = $1`,
+     WHERE deduplication_key = ?`,
     [deduplicationKey]
   ));
 
-  return result.rows;
+  return result.rows.map(toDiscordJob);
 }
 
 async function claimDiscordJobs(
@@ -170,37 +180,29 @@ async function claimDiscordJobs(
     const candidates = await transaction.query<{ id: string }>(
       `SELECT id
        FROM discord_jobs
-       WHERE (status = 'QUEUED' AND available_at <= NOW())
-          OR (status = 'LEASED' AND lease_expires_at <= NOW())
+       WHERE (status = 'QUEUED' AND available_at <= UTC_TIMESTAMP(3))
+          OR (status = 'LEASED' AND lease_expires_at <= UTC_TIMESTAMP(3))
        ORDER BY available_at ASC, id ASC
-       LIMIT $1
-       FOR UPDATE`,
-      [limit]
+        LIMIT ${limit}
+        FOR UPDATE SKIP LOCKED`
     );
     const claimed: DiscordJob[] = [];
 
     for (const candidate of candidates.rows) {
-      const result = await transaction.query<DiscordJobRow>(
-        `WITH claimed_job AS (
-           UPDATE discord_jobs
-           SET status = 'LEASED',
-               lease_owner = $1,
-               lease_expires_at = NOW() + ($2 * INTERVAL '1 second'),
-               attempt_count = attempt_count + 1,
-               updated_at = NOW()
-           WHERE id = $3
-             AND ((status = 'QUEUED' AND available_at <= NOW())
-               OR (status = 'LEASED' AND lease_expires_at <= NOW()))
-           RETURNING *
-         )
-         ${jobSelectColumns}
-         FROM claimed_job`,
+      const result = await transaction.query(
+        `UPDATE discord_jobs
+         SET status = 'LEASED',
+             lease_owner = ?,
+             lease_expires_at = DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? SECOND),
+             attempt_count = attempt_count + 1,
+             updated_at = UTC_TIMESTAMP(3)
+         WHERE id = ?
+           AND ((status = 'QUEUED' AND available_at <= UTC_TIMESTAMP(3))
+             OR (status = 'LEASED' AND lease_expires_at <= UTC_TIMESTAMP(3)))`,
         [workerId, leaseSeconds, candidate.id]
       );
-      const job = result.rows[0];
-
-      if (job) {
-        claimed.push(job);
+      if (result.affectedRows === 1) {
+        claimed.push(await findJobById(transaction, candidate.id));
       }
     }
 
@@ -209,20 +211,19 @@ async function claimDiscordJobs(
 }
 
 async function completeClaimedJob(database: TransactionalDatabase, workerId: string, jobId: string): Promise<boolean> {
-  const result = await database.transaction(async (transaction) => transaction.query<{ id: string }>(
+  const result = await database.transaction(async (transaction) => transaction.query(
     `UPDATE discord_jobs
      SET status = 'COMPLETED',
-         completed_at = NOW(),
+         completed_at = UTC_TIMESTAMP(3),
          lease_owner = NULL,
          lease_expires_at = NULL,
          last_error_code = NULL,
-         updated_at = NOW()
-     WHERE id = $1 AND status = 'LEASED' AND lease_owner = $2
-     RETURNING id`,
+         updated_at = UTC_TIMESTAMP(3)
+     WHERE id = ? AND status = 'LEASED' AND lease_owner = ?`,
     [jobId, workerId]
   ));
 
-  return Boolean(result.rows[0]);
+  return result.affectedRows === 1;
 }
 
 async function retryClaimedJob(database: TransactionalDatabase, input: RetryClaimedJobInput): Promise<boolean> {
@@ -230,20 +231,19 @@ async function retryClaimedJob(database: TransactionalDatabase, input: RetryClai
     throw new Error("Retry error code and delay must be valid.");
   }
 
-  const result = await database.transaction(async (transaction) => transaction.query<{ id: string }>(
+  const result = await database.transaction(async (transaction) => transaction.query(
     `UPDATE discord_jobs
-     SET status = CASE WHEN $1 THEN 'FAILED' ELSE 'QUEUED' END,
-         available_at = CASE WHEN $1 THEN available_at ELSE NOW() + ($2 * INTERVAL '1 second') END,
+     SET status = CASE WHEN ? THEN 'FAILED' ELSE 'QUEUED' END,
+         available_at = CASE WHEN ? THEN available_at ELSE DATE_ADD(UTC_TIMESTAMP(3), INTERVAL ? SECOND) END,
          lease_owner = NULL,
          lease_expires_at = NULL,
-         last_error_code = $3,
-         updated_at = NOW()
-     WHERE id = $4 AND status = 'LEASED' AND lease_owner = $5
-     RETURNING id`,
-    [input.finalAttempt, input.delaySeconds, input.errorCode, input.jobId, input.workerId]
+         last_error_code = ?,
+         updated_at = UTC_TIMESTAMP(3)
+     WHERE id = ? AND status = 'LEASED' AND lease_owner = ?`,
+    [input.finalAttempt, input.finalAttempt, input.delaySeconds, input.errorCode, input.jobId, input.workerId]
   ));
 
-  return Boolean(result.rows[0]);
+  return result.affectedRows === 1;
 }
 
 async function insertRoleSyncJob(
@@ -252,37 +252,62 @@ async function insertRoleSyncJob(
   deduplicationKey: string,
   payload: RoleSyncPayload
 ): Promise<DiscordJob | null> {
-  const result = await transaction.query<DiscordJobRow>(
-    `INSERT INTO discord_jobs (
+  const id = randomUUID();
+  try {
+    await transaction.query(
+      `INSERT INTO discord_jobs (
        id, league_id, job_type, deduplication_key, payload, status, attempt_count, available_at
-     ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, NOW())
-     ON CONFLICT (deduplication_key) DO NOTHING
-     RETURNING
-       id,
-       league_id AS "leagueId",
-       job_type AS "jobType",
-       deduplication_key AS "deduplicationKey",
-       payload,
-       status,
-       attempt_count AS "attemptCount",
-       available_at AS "availableAt",
-       lease_owner AS "leaseOwner",
-       lease_expires_at AS "leaseExpiresAt",
-       completed_at AS "completedAt"`,
-    [randomUUID(), leagueId, "ROLE_SYNC", deduplicationKey, JSON.stringify(payload), "QUEUED", 0]
-  );
-  return result.rows[0] ?? null;
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))`,
+      [id, leagueId, "ROLE_SYNC", deduplicationKey, JSON.stringify(payload), "QUEUED", 0]
+    );
+  } catch (error) {
+    if (isDuplicateKey(error)) {
+      return null;
+    }
+    throw error;
+  }
+  return findJobById(transaction, id);
 }
 
 const jobSelectColumns = `SELECT
   id,
-  league_id AS "leagueId",
-  job_type AS "jobType",
-  deduplication_key AS "deduplicationKey",
+  league_id AS leagueId,
+  job_type AS jobType,
+  deduplication_key AS deduplicationKey,
   payload,
   status,
-  attempt_count AS "attemptCount",
-  available_at AS "availableAt",
-  lease_owner AS "leaseOwner",
-  lease_expires_at AS "leaseExpiresAt",
-  completed_at AS "completedAt"`;
+  attempt_count AS attemptCount,
+  available_at AS availableAt,
+  lease_owner AS leaseOwner,
+  lease_expires_at AS leaseExpiresAt,
+  completed_at AS completedAt`;
+
+function toDiscordJob(row: DiscordJobRow): DiscordJob {
+  return { ...row, payload: parseRoleSyncPayload(row.payload) };
+}
+
+function parseRoleSyncPayload(value: RoleSyncPayload | string): RoleSyncPayload {
+  const payload = typeof value === "string" ? JSON.parse(value) : value;
+  if (!isRoleSyncPayload(payload)) {
+    throw new Error("Invalid durable role-sync payload.");
+  }
+  return payload;
+}
+
+function isRoleSyncPayload(value: unknown): value is RoleSyncPayload {
+  return typeof value === "object"
+    && value !== null
+    && "membershipId" in value
+    && typeof value.membershipId === "string"
+    && "discordUserId" in value
+    && typeof value.discordUserId === "string"
+    && "operation" in value
+    && (value.operation === "ASSIGN" || value.operation === "REMOVE");
+}
+
+function isDuplicateKey(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: unknown }).code === "ER_DUP_ENTRY";
+}

@@ -54,20 +54,16 @@ async function setTeamDiscordRole(
 
     let mapped: TeamRow;
     try {
-      const result = await transaction.query<TeamRow>(
+      const result = await transaction.query(
         `UPDATE teams
-         SET discord_role_id = $1, discord_role_state = 'AVAILABLE', updated_at = NOW()
-         WHERE id = $2 AND league_id = $3
-         RETURNING
-           id,
-           name,
-           roster_cap AS "rosterCap",
-           status,
-           discord_role_id AS "discordRoleId",
-           discord_role_state AS "discordRoleState"`,
+         SET discord_role_id = ?, discord_role_state = 'AVAILABLE', updated_at = UTC_TIMESTAMP(3)
+         WHERE id = ? AND league_id = ?`,
         [discordRoleId, current.id, context.leagueId]
       );
-      mapped = result.rows[0] ?? missingTeam();
+      if (result.affectedRows !== 1) {
+        missingTeam();
+      }
+      mapped = await findTeam(transaction, context.leagueId, current.id);
     } catch (error) {
       const domainError = toTeamConflictError(error);
       if (domainError) {
@@ -88,13 +84,13 @@ async function setTeamDiscordRole(
 
     const memberships = await transaction.query<ActiveMembershipRow>(
       `SELECT
-         team_memberships.id AS "membershipId",
-         discord_users.discord_user_id AS "discordUserId"
+         team_memberships.id AS membershipId,
+         discord_users.discord_user_id AS discordUserId
        FROM team_memberships
        JOIN league_members ON league_members.id = team_memberships.league_member_id
        JOIN discord_users ON discord_users.discord_user_id = league_members.discord_user_id
-       WHERE team_memberships.league_id = $1
-         AND team_memberships.team_id = $2
+       WHERE team_memberships.league_id = ?
+         AND team_memberships.team_id = ?
          AND team_memberships.status = 'ACTIVE'
          AND league_members.status = 'ACTIVE'`,
       [context.leagueId, current.id]
@@ -125,22 +121,16 @@ async function createTeam(
   return withTransaction(database, async (transaction) => {
     await ensureTeamIsAvailable(transaction, context.leagueId, team.normalizedName, discordRoleId);
 
-    let result: { rows: TeamRow[] };
+    const teamId = randomUUID();
+    let inserted: TeamRow;
 
     try {
-      result = await transaction.query<TeamRow>(
+      await transaction.query(
         `INSERT INTO teams (
           id, league_id, name, normalized_name, roster_cap, status, discord_role_id, discord_role_state
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING
-          id,
-          name,
-          roster_cap AS "rosterCap",
-          status,
-          discord_role_id AS "discordRoleId",
-          discord_role_state AS "discordRoleState"`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          randomUUID(),
+          teamId,
           context.leagueId,
           team.name,
           team.normalizedName,
@@ -150,6 +140,7 @@ async function createTeam(
           discordRoleId ? "AVAILABLE" : "UNMAPPED"
         ]
       );
+      inserted = await findTeam(transaction, context.leagueId, teamId);
     } catch (error) {
       const domainError = toTeamConflictError(error);
 
@@ -158,12 +149,6 @@ async function createTeam(
       }
       throw error;
     }
-    const inserted = result.rows[0];
-
-    if (!inserted) {
-      throw new DomainError("TEAM_NOT_FOUND", "The new team could not be resolved.");
-    }
-
     await audit.appendAuditEvent(transaction, {
       leagueId: context.leagueId,
       entityType: "team",
@@ -195,12 +180,12 @@ async function listTeams(database: TransactionalDatabase, context: LeagueContext
       `SELECT
          id,
          name,
-         roster_cap AS "rosterCap",
+         roster_cap AS rosterCap,
          status,
-         discord_role_id AS "discordRoleId",
-         discord_role_state AS "discordRoleState"
+         discord_role_id AS discordRoleId,
+         discord_role_state AS discordRoleState
        FROM teams
-       WHERE league_id = $1
+       WHERE league_id = ?
        ORDER BY normalized_name ASC`,
       [context.leagueId]
     );
@@ -227,24 +212,16 @@ async function setTeamStatus(
 
   await withTransaction(database, async (transaction) => {
     const current = await findTeam(transaction, context.leagueId, teamId);
-    const result = await transaction.query<TeamRow>(
+    const result = await transaction.query(
       `UPDATE teams
-       SET status = $1, updated_at = NOW()
-       WHERE id = $2 AND league_id = $3
-       RETURNING
-         id,
-         name,
-         roster_cap AS "rosterCap",
-         status,
-         discord_role_id AS "discordRoleId",
-         discord_role_state AS "discordRoleState"`,
+       SET status = ?, updated_at = UTC_TIMESTAMP(3)
+       WHERE id = ? AND league_id = ?`,
       [status, teamId, context.leagueId]
     );
-    const updated = result.rows[0];
-
-    if (!updated) {
+    if (result.affectedRows !== 1) {
       throw new DomainError("TEAM_NOT_FOUND", "This team was not found.");
     }
+    const updated = await findTeam(transaction, context.leagueId, teamId);
 
     await audit.appendAuditEvent(transaction, {
       leagueId: context.leagueId,
@@ -267,7 +244,7 @@ async function ensureTeamIsAvailable(
   discordRoleId: string | undefined
 ): Promise<void> {
   const duplicateName = await transaction.query<{ id: string }>(
-    "SELECT id FROM teams WHERE league_id = $1 AND normalized_name = $2",
+    "SELECT id FROM teams WHERE league_id = ? AND normalized_name = ?",
     [leagueId, normalizedName]
   );
   if (duplicateName.rows[0]) {
@@ -279,7 +256,7 @@ async function ensureTeamIsAvailable(
   }
 
   const duplicateRole = await transaction.query<{ id: string }>(
-    "SELECT id FROM teams WHERE league_id = $1 AND discord_role_id = $2",
+    "SELECT id FROM teams WHERE league_id = ? AND discord_role_id = ?",
     [leagueId, discordRoleId]
   );
   if (duplicateRole.rows[0]) {
@@ -292,12 +269,12 @@ async function findTeam(transaction: SqlTransaction, leagueId: string, teamId: s
     `SELECT
        id,
        name,
-       roster_cap AS "rosterCap",
+       roster_cap AS rosterCap,
        status,
-       discord_role_id AS "discordRoleId",
-       discord_role_state AS "discordRoleState"
+       discord_role_id AS discordRoleId,
+       discord_role_state AS discordRoleState
      FROM teams
-     WHERE league_id = $1 AND id = $2${lock ? " FOR UPDATE" : ""}`,
+     WHERE league_id = ? AND id = ?${lock ? " FOR UPDATE" : ""}`,
     [leagueId, teamId]
   );
   const team = result.rows[0];
@@ -324,7 +301,7 @@ async function ensureDiscordRoleIsAvailable(
   discordRoleId: string
 ): Promise<void> {
   const duplicate = await transaction.query<{ id: string }>(
-    "SELECT id FROM teams WHERE league_id = $1 AND discord_role_id = $2 AND id <> $3",
+    "SELECT id FROM teams WHERE league_id = ? AND discord_role_id = ? AND id <> ?",
     [leagueId, discordRoleId, teamId]
   );
   if (duplicate.rows[0]) {
@@ -337,19 +314,19 @@ function missingTeam(): never {
 }
 
 async function loadDashboard(transaction: SqlTransaction, team: TeamRow): Promise<TeamDashboard> {
-  const roster = await transaction.query<{ rosterCount: string }>(
-    "SELECT COUNT(*)::text AS \"rosterCount\" FROM team_memberships WHERE team_id = $1 AND status = 'ACTIVE'",
+  const roster = await transaction.query<{ rosterCount: number | string }>(
+    "SELECT COUNT(*) AS rosterCount FROM team_memberships WHERE team_id = ? AND status = 'ACTIVE'",
     [team.id]
   );
   const manager = await transaction.query<TeamManagerRow>(
     `SELECT
-       league_members.id AS "leagueMemberId",
-       discord_users.discord_user_id AS "discordUserId",
-       discord_users.display_name AS "displayName"
+       league_members.id AS leagueMemberId,
+       discord_users.discord_user_id AS discordUserId,
+       discord_users.display_name AS displayName
      FROM team_memberships
      JOIN league_members ON league_members.id = team_memberships.league_member_id
      JOIN discord_users ON discord_users.discord_user_id = league_members.discord_user_id
-     WHERE team_memberships.team_id = $1
+     WHERE team_memberships.team_id = ?
        AND team_memberships.status = 'ACTIVE'
        AND team_memberships.membership_role = 'MANAGER'
      LIMIT 1`,
@@ -419,5 +396,5 @@ function isUniqueViolation(error: unknown): error is { code?: string; constraint
   return typeof error === "object"
     && error !== null
     && "code" in error
-    && (error as { code?: unknown }).code === "23505";
+    && (error as { code?: unknown }).code === "ER_DUP_ENTRY";
 }

@@ -10,13 +10,13 @@ describe("withTransaction", () => {
     try {
       await expect(withTransaction(database, async (transaction) => {
         await transaction.query(
-          "INSERT INTO leagues (id, discord_guild_id, name, default_roster_cap) VALUES ($1, $2, $3, $4)",
+          "INSERT INTO leagues (id, discord_guild_id, name, default_roster_cap) VALUES (?, ?, ?, ?)",
           ["00000000-0000-4000-8000-000000000201", "guild-rollback", "Rollback League", 12]
         );
         throw new Error("intentional failure");
       })).rejects.toThrow("intentional failure");
 
-      const result = await database.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM leagues");
+      const result = await database.query<{ count: string }>("SELECT CAST(COUNT(*) AS CHAR) AS count FROM leagues");
       expect(result.rows).toEqual([{ count: "0" }]);
     } finally {
       await database.dispose();

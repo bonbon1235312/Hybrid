@@ -41,47 +41,43 @@ async function bootstrapLeague(
   validateBootstrapInput(input);
 
   return withTransaction(database, async (transaction) => {
-    const league = await transaction.query<{ id: string }>(
+    const leagueId = randomUUID();
+    try {
+      await transaction.query(
       `INSERT INTO leagues (id, discord_guild_id, name, default_roster_cap)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (discord_guild_id) DO NOTHING
-       RETURNING id`,
-      [randomUUID(), input.discordGuildId, input.name.trim(), input.defaultRosterCap]
-    );
-    const leagueId = league.rows[0]?.id;
-
-    if (!leagueId) {
-      throw new DomainError("LEAGUE_ALREADY_EXISTS", "A league is already configured for this server.");
+       VALUES (?, ?, ?, ?)`,
+        [leagueId, input.discordGuildId, input.name.trim(), input.defaultRosterCap]
+      );
+    } catch (error) {
+      if (isDuplicateKey(error)) {
+        throw new DomainError("LEAGUE_ALREADY_EXISTS", "A league is already configured for this server.");
+      }
+      throw error;
     }
 
     await transaction.query(
       `INSERT INTO discord_users (discord_user_id, display_name)
-       VALUES ($1, $2)
-       ON CONFLICT (discord_user_id) DO UPDATE
-         SET display_name = EXCLUDED.display_name, last_seen_at = NOW(), updated_at = NOW()`,
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE
+         display_name = VALUES(display_name), last_seen_at = UTC_TIMESTAMP(3), updated_at = UTC_TIMESTAMP(3)`,
       [input.actor.discordUserId, input.actor.displayName.trim()]
     );
 
-    const member = await transaction.query<{ id: string }>(
+    const leagueMemberId = randomUUID();
+    await transaction.query(
       `INSERT INTO league_members (id, league_id, discord_user_id)
-       VALUES ($1, $2, $3)
-       RETURNING id`,
-      [randomUUID(), leagueId, input.actor.discordUserId]
+       VALUES (?, ?, ?)`,
+      [leagueMemberId, leagueId, input.actor.discordUserId]
     );
-    const leagueMemberId = member.rows[0]?.id;
-
-    if (!leagueMemberId) {
-      throw new DomainError("LEAGUE_NOT_FOUND", "The new league could not be resolved.");
-    }
 
     await transaction.query(
-      "INSERT INTO staff_assignments (id, league_id, league_member_id, role) VALUES ($1, $2, $3, $4)",
+      "INSERT INTO staff_assignments (id, league_id, league_member_id, role) VALUES (?, ?, ?, ?)",
       [randomUUID(), leagueId, leagueMemberId, "OWNER"]
     );
     await transaction.query(
       `INSERT INTO audit_events (
         id, league_id, actor_member_id, entity_type, entity_id, action, correlation_id, after_state
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         randomUUID(),
         leagueId,
@@ -116,15 +112,15 @@ async function resolveLeagueContext(
   const result = await database.transaction(async (transaction) => {
     const league = await transaction.query<LeagueRow>(
     `SELECT
-       leagues.id AS "leagueId",
-       league_members.id AS "leagueMemberId"
+       leagues.id AS leagueId,
+       league_members.id AS leagueMemberId
      FROM leagues
      LEFT JOIN league_members
        ON league_members.league_id = leagues.id
-       AND league_members.discord_user_id = $2
+       AND league_members.discord_user_id = ?
        AND league_members.status = 'ACTIVE'
-     WHERE leagues.discord_guild_id = $1`,
-    [discordGuildId, discordUserId]
+     WHERE leagues.discord_guild_id = ?`,
+     [discordUserId, discordGuildId]
     );
     const row = league.rows[0];
 
@@ -139,13 +135,13 @@ async function resolveLeagueContext(
     const staffAssignments = await transaction.query<RoleRow>(
       `SELECT role
        FROM staff_assignments
-       WHERE league_id = $1 AND league_member_id = $2 AND ended_at IS NULL`,
+       WHERE league_id = ? AND league_member_id = ? AND ended_at IS NULL`,
       [row.leagueId, row.leagueMemberId]
     );
     const memberships = await transaction.query<MembershipRoleRow>(
-      `SELECT membership_role AS role, team_id AS "teamId"
+      `SELECT membership_role AS role, team_id AS teamId
        FROM team_memberships
-       WHERE league_id = $1 AND league_member_id = $2 AND status = 'ACTIVE'`,
+       WHERE league_id = ? AND league_member_id = ? AND status = 'ACTIVE'`,
       [row.leagueId, row.leagueMemberId]
     );
     const roles = uniqueRoles([
@@ -160,6 +156,13 @@ async function resolveLeagueContext(
   });
 
   return result;
+}
+
+function isDuplicateKey(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: unknown }).code === "ER_DUP_ENTRY";
 }
 
 function createContext(

@@ -183,18 +183,18 @@ async function loadPlan(database: TransactionalDatabase, job: DiscordJob): Promi
   return database.transaction(async (transaction) => {
     const affectedResult = await transaction.query<MembershipRoleMapping & { discordGuildId: string }>(
       `SELECT
-         team_memberships.league_member_id AS "leagueMemberId",
-         discord_users.discord_user_id AS "discordUserId",
-         leagues.discord_guild_id AS "discordGuildId",
-         teams.id AS "teamId",
-         teams.discord_role_id AS "discordRoleId",
-         teams.discord_role_state AS "discordRoleState"
+         team_memberships.league_member_id AS leagueMemberId,
+         discord_users.discord_user_id AS discordUserId,
+         leagues.discord_guild_id AS discordGuildId,
+         teams.id AS teamId,
+         teams.discord_role_id AS discordRoleId,
+         teams.discord_role_state AS discordRoleState
        FROM team_memberships
        JOIN league_members ON league_members.id = team_memberships.league_member_id
        JOIN discord_users ON discord_users.discord_user_id = league_members.discord_user_id
        JOIN teams ON teams.id = team_memberships.team_id AND teams.league_id = team_memberships.league_id
        JOIN leagues ON leagues.id = team_memberships.league_id
-       WHERE team_memberships.id = $1 AND team_memberships.league_id = $2`,
+       WHERE team_memberships.id = ? AND team_memberships.league_id = ?`,
       [job.payload.membershipId, job.leagueId]
     );
     const affected = affectedResult.rows[0];
@@ -205,14 +205,14 @@ async function loadPlan(database: TransactionalDatabase, job: DiscordJob): Promi
 
     const desiredResult = await transaction.query<TeamRoleMapping>(
       `SELECT
-         teams.id AS "teamId",
-         teams.discord_role_id AS "discordRoleId",
-         teams.discord_role_state AS "discordRoleState"
+         teams.id AS teamId,
+         teams.discord_role_id AS discordRoleId,
+         teams.discord_role_state AS discordRoleState
        FROM team_memberships
        JOIN league_members ON league_members.id = team_memberships.league_member_id
        JOIN teams ON teams.id = team_memberships.team_id AND teams.league_id = team_memberships.league_id
-       WHERE team_memberships.league_id = $1
-         AND team_memberships.league_member_id = $2
+       WHERE team_memberships.league_id = ?
+         AND team_memberships.league_member_id = ?
          AND team_memberships.status = 'ACTIVE'
          AND league_members.status = 'ACTIVE'
        LIMIT 1`,
@@ -253,15 +253,14 @@ async function markMappingsUnavailable(
       if (!mapping.discordRoleId) {
         continue;
       }
-      const updated = await transaction.query<{ id: string }>(
+      const updated = await transaction.query(
         `UPDATE teams
-         SET discord_role_state = 'UNAVAILABLE', updated_at = NOW()
-         WHERE id = $1 AND league_id = $2 AND discord_role_state = 'AVAILABLE'
-         RETURNING id`,
+         SET discord_role_state = 'UNAVAILABLE', updated_at = UTC_TIMESTAMP(3)
+         WHERE id = ? AND league_id = ? AND discord_role_state = 'AVAILABLE'`,
         [mapping.teamId, leagueId]
       );
 
-      if (updated.rows[0]) {
+      if (updated.affectedRows === 1) {
         await audit.appendAuditEvent(transaction, {
           leagueId,
           entityType: "team",

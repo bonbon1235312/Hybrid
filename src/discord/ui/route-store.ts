@@ -41,7 +41,7 @@ async function issueRoute(
   await database.transaction((transaction) => transaction.query(
     `INSERT INTO interaction_routes
       (nonce, discord_guild_id, actor_discord_user_id, action, entity_id, state, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, to_timestamp($7))`,
+     VALUES (?, ?, ?, ?, ?, ?, FROM_UNIXTIME(? / 1000))`,
     [
       nonce,
       input.guildId,
@@ -49,7 +49,7 @@ async function issueRoute(
       input.action,
       input.entityId ?? null,
       input.state === undefined ? null : JSON.stringify(input.state),
-      expiresAt / 1_000
+      expiresAt
     ]
   ));
 
@@ -68,30 +68,50 @@ async function consumeRoute(
     return null;
   }
 
-  const result = await database.transaction((transaction) => transaction.query<RouteRow>(
-    `UPDATE interaction_routes
-     SET consumed_at = NOW()
-     WHERE nonce = $1
-       AND discord_guild_id = $2
-       AND actor_discord_user_id = $3
-       AND consumed_at IS NULL
-       AND expires_at > NOW()
-     RETURNING action, entity_id AS "entityId", state, expires_at AS "expiresAt"`,
-    [nonce, guildId, actorId]
-  ));
-  const route = result.rows[0];
-  if (!route) {
-    return null;
-  }
+  return database.transaction(async (transaction) => {
+    const result = await transaction.query<RouteRow>(
+      `SELECT action, entity_id AS entityId, state, expires_at AS expiresAt
+       FROM interaction_routes
+       WHERE nonce = ?
+         AND discord_guild_id = ?
+         AND actor_discord_user_id = ?
+         AND consumed_at IS NULL
+         AND expires_at > UTC_TIMESTAMP(3)
+       FOR UPDATE`,
+      [nonce, guildId, actorId]
+    );
+    const route = result.rows[0];
+    if (!route) {
+      return null;
+    }
 
-  return {
-    action: route.action,
-    actorId,
-    ...(route.entityId ? { entityId: route.entityId } : {}),
-    expiresAt: new Date(route.expiresAt).getTime(),
-    nonce,
-    state: route.state
-  };
+    const consumed = await transaction.query(
+      `UPDATE interaction_routes
+       SET consumed_at = UTC_TIMESTAMP(3)
+       WHERE nonce = ?
+         AND discord_guild_id = ?
+         AND actor_discord_user_id = ?
+         AND consumed_at IS NULL
+         AND expires_at > UTC_TIMESTAMP(3)`,
+      [nonce, guildId, actorId]
+    );
+    if (consumed.affectedRows !== 1) {
+      return null;
+    }
+
+    return {
+      action: route.action,
+      actorId,
+      ...(route.entityId ? { entityId: route.entityId } : {}),
+      expiresAt: new Date(route.expiresAt).getTime(),
+      nonce,
+      state: parseState(route.state)
+    };
+  });
+}
+
+function parseState(value: unknown): unknown {
+  return typeof value === "string" ? JSON.parse(value) : value;
 }
 
 function signature(signingKey: string, nonce: string): string {

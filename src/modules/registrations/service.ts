@@ -41,17 +41,20 @@ async function requestRegistration(
   return withTransaction(database, async (transaction) => {
     await transaction.query(
       `INSERT INTO discord_users (discord_user_id, display_name)
-       VALUES ($1, $2)
-       ON CONFLICT (discord_user_id) DO UPDATE
-         SET display_name = EXCLUDED.display_name, last_seen_at = NOW(), updated_at = NOW()`,
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE
+         display_name = VALUES(display_name), last_seen_at = UTC_TIMESTAMP(3), updated_at = UTC_TIMESTAMP(3)`,
       [context.actor.discordUserId, displayName]
     );
-    const member = await transaction.query<{ id: string }>(
+    await transaction.query(
       `INSERT INTO league_members (id, league_id, discord_user_id)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (league_id, discord_user_id) DO UPDATE SET updated_at = NOW()
-       RETURNING id`,
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE updated_at = UTC_TIMESTAMP(3)`,
       [randomUUID(), context.leagueId, context.actor.discordUserId]
+    );
+    const member = await transaction.query<{ id: string }>(
+      "SELECT id FROM league_members WHERE league_id = ? AND discord_user_id = ?",
+      [context.leagueId, context.actor.discordUserId]
     );
     const leagueMemberId = member.rows[0]?.id;
 
@@ -59,27 +62,20 @@ async function requestRegistration(
       throw new DomainError("LEAGUE_NOT_FOUND", "The league member could not be resolved.");
     }
 
-    const created = await transaction.query<RegistrationRow>(
-      `INSERT INTO registration_requests (id, league_id, league_member_id, display_name, status)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (league_id, league_member_id) WHERE status = 'PENDING' DO NOTHING
-       RETURNING
-         id,
-         league_id AS "leagueId",
-         league_member_id AS "leagueMemberId",
-         display_name AS "displayName",
-         status,
-         requested_at AS "requestedAt",
-         reviewed_at AS "reviewedAt",
-         reviewed_by_member_id AS "reviewedByMemberId",
-         declined_reason AS "declinedReason"`,
-      [randomUUID(), context.leagueId, leagueMemberId, displayName, "PENDING"]
-    );
-    const registration = created.rows[0];
-
-    if (!registration) {
-      throw new DomainError("REGISTRATION_ALREADY_OPEN", "You already have a pending registration.");
+    const registrationId = randomUUID();
+    try {
+      await transaction.query(
+        `INSERT INTO registration_requests (id, league_id, league_member_id, display_name, status)
+         VALUES (?, ?, ?, ?, ?)`,
+        [registrationId, context.leagueId, leagueMemberId, displayName, "PENDING"]
+      );
+    } catch (error) {
+      if (isDuplicateKey(error, "open_registration_per_league")) {
+        throw new DomainError("REGISTRATION_ALREADY_OPEN", "You already have a pending registration.");
+      }
+      throw error;
     }
+    const registration = await findRegistration(transaction, context.leagueId, registrationId, false);
 
     await audit.appendAuditEvent(transaction, {
       leagueId: context.leagueId,
@@ -198,18 +194,18 @@ async function getPendingRegistrationForActor(
   const result = await database.transaction(async (transaction) => transaction.query<RegistrationRow>(
     `SELECT
        registration_requests.id,
-       registration_requests.league_id AS "leagueId",
-       registration_requests.league_member_id AS "leagueMemberId",
-       registration_requests.display_name AS "displayName",
+       registration_requests.league_id AS leagueId,
+       registration_requests.league_member_id AS leagueMemberId,
+       registration_requests.display_name AS displayName,
        registration_requests.status,
-       registration_requests.requested_at AS "requestedAt",
-       registration_requests.reviewed_at AS "reviewedAt",
-       registration_requests.reviewed_by_member_id AS "reviewedByMemberId",
-       registration_requests.declined_reason AS "declinedReason"
+       registration_requests.requested_at AS requestedAt,
+       registration_requests.reviewed_at AS reviewedAt,
+       registration_requests.reviewed_by_member_id AS reviewedByMemberId,
+       registration_requests.declined_reason AS declinedReason
      FROM registration_requests
      JOIN league_members ON league_members.id = registration_requests.league_member_id
-     WHERE registration_requests.league_id = $1
-       AND league_members.discord_user_id = $2
+     WHERE registration_requests.league_id = ?
+       AND league_members.discord_user_id = ?
        AND registration_requests.status = 'PENDING'
      ORDER BY registration_requests.requested_at DESC, registration_requests.id DESC
      LIMIT 1`,
@@ -228,15 +224,15 @@ async function listPendingRegistrations(
   const result = await database.transaction(async (transaction) => transaction.query<RegistrationSummary>(
     `SELECT
        registration_requests.id,
-       registration_requests.league_member_id AS "leagueMemberId",
-       discord_users.discord_user_id AS "discordUserId",
-       registration_requests.display_name AS "displayName",
+       registration_requests.league_member_id AS leagueMemberId,
+       discord_users.discord_user_id AS discordUserId,
+       registration_requests.display_name AS displayName,
        registration_requests.status,
-       registration_requests.requested_at AS "requestedAt"
+       registration_requests.requested_at AS requestedAt
      FROM registration_requests
      JOIN league_members ON league_members.id = registration_requests.league_member_id
      JOIN discord_users ON discord_users.discord_user_id = league_members.discord_user_id
-     WHERE registration_requests.league_id = $1 AND registration_requests.status = 'PENDING'
+     WHERE registration_requests.league_id = ? AND registration_requests.status = 'PENDING'
      ORDER BY registration_requests.requested_at ASC, registration_requests.id ASC`,
     [context.leagueId]
   ));
@@ -246,7 +242,7 @@ async function listPendingRegistrations(
 
 async function findMemberId(transaction: SqlTransaction, leagueId: string, discordUserId: string): Promise<string> {
   const result = await transaction.query<{ id: string }>(
-    "SELECT id FROM league_members WHERE league_id = $1 AND discord_user_id = $2",
+    "SELECT id FROM league_members WHERE league_id = ? AND discord_user_id = ?",
     [leagueId, discordUserId]
   );
   const memberId = result.rows[0]?.id;
@@ -266,16 +262,16 @@ async function findRegistration(
   const result = await transaction.query<RegistrationRow>(
     `SELECT
        id,
-       league_id AS "leagueId",
-       league_member_id AS "leagueMemberId",
-       display_name AS "displayName",
+       league_id AS leagueId,
+       league_member_id AS leagueMemberId,
+       display_name AS displayName,
        status,
-       requested_at AS "requestedAt",
-       reviewed_at AS "reviewedAt",
-       reviewed_by_member_id AS "reviewedByMemberId",
-       declined_reason AS "declinedReason"
+       requested_at AS requestedAt,
+       reviewed_at AS reviewedAt,
+       reviewed_by_member_id AS reviewedByMemberId,
+       declined_reason AS declinedReason
      FROM registration_requests
-     WHERE league_id = $1 AND id = $2${lock ? " FOR UPDATE" : ""}`,
+     WHERE league_id = ? AND id = ?${lock ? " FOR UPDATE" : ""}`,
     [leagueId, registrationId]
   );
   const registration = result.rows[0];
@@ -294,31 +290,30 @@ async function updateRegistrationStatus(
   reviewerMemberId: string | null,
   declinedReason: string | null
 ): Promise<Registration> {
-  const result = await transaction.query<RegistrationRow>(
+  const result = await transaction.query(
     `UPDATE registration_requests
-     SET status = $1,
-         reviewed_at = CASE WHEN $1 IN ('APPROVED', 'DECLINED') THEN NOW() ELSE reviewed_at END,
-         reviewed_by_member_id = $2,
-         declined_reason = $3
-     WHERE league_id = $4 AND id = $5 AND status = 'PENDING'
-     RETURNING
-       id,
-       league_id AS "leagueId",
-       league_member_id AS "leagueMemberId",
-       display_name AS "displayName",
-       status,
-       requested_at AS "requestedAt",
-       reviewed_at AS "reviewedAt",
-       reviewed_by_member_id AS "reviewedByMemberId",
-       declined_reason AS "declinedReason"`,
-    [status, reviewerMemberId, declinedReason, leagueId, registrationId]
+     SET status = ?,
+         reviewed_at = CASE WHEN ? IN ('APPROVED', 'DECLINED') THEN UTC_TIMESTAMP(3) ELSE reviewed_at END,
+         reviewed_by_member_id = ?,
+         declined_reason = ?
+     WHERE league_id = ? AND id = ? AND status = 'PENDING'`,
+    [status, status, reviewerMemberId, declinedReason, leagueId, registrationId]
   );
-  const registration = result.rows[0];
 
-  if (!registration) {
+  if (result.affectedRows !== 1) {
     throw new DomainError("REGISTRATION_NOT_PENDING", "This registration is no longer pending.");
   }
-  return registration;
+  return findRegistration(transaction, leagueId, registrationId, false);
+}
+
+function isDuplicateKey(error: unknown, indexName: string): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "code" in error
+    && (error as { code?: unknown }).code === "ER_DUP_ENTRY"
+    && "message" in error
+    && typeof (error as { message?: unknown }).message === "string"
+    && (error as { message: string }).message.includes(indexName);
 }
 
 function validateDisplayName(displayName: string): string {

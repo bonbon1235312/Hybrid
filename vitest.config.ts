@@ -6,6 +6,9 @@ export default defineConfig({
     include: ["tests/**/*.test.ts"],
     setupFiles: ["tests/setup.ts"],
     fileParallelism: false,
+    maxWorkers: 1,
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     restoreMocks: true,
     clearMocks: true
   }

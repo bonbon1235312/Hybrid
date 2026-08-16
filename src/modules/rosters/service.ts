@@ -51,20 +51,20 @@ async function listActiveTeamMemberships(
     const result = await transaction.query<TeamMembershipRow>(
       `SELECT
          team_memberships.id,
-         team_memberships.league_id AS "leagueId",
-         team_memberships.league_member_id AS "leagueMemberId",
-         discord_users.display_name AS "playerDisplayName",
-         team_memberships.team_id AS "teamId",
+         team_memberships.league_id AS leagueId,
+         team_memberships.league_member_id AS leagueMemberId,
+         discord_users.display_name AS playerDisplayName,
+         team_memberships.team_id AS teamId,
          team_memberships.membership_role AS role,
          team_memberships.status,
-         team_memberships.ended_at AS "endedAt",
-         team_memberships.ended_by_member_id AS "endedByMemberId"
+         team_memberships.ended_at AS endedAt,
+         team_memberships.ended_by_member_id AS endedByMemberId
        FROM team_memberships
        JOIN league_members
          ON league_members.league_id = team_memberships.league_id
          AND league_members.id = team_memberships.league_member_id
        JOIN discord_users ON discord_users.discord_user_id = league_members.discord_user_id
-       WHERE team_memberships.league_id = $1 AND team_memberships.team_id = $2 AND team_memberships.status = 'ACTIVE'
+       WHERE team_memberships.league_id = ? AND team_memberships.team_id = ? AND team_memberships.status = 'ACTIVE'
        ORDER BY team_memberships.id`,
       [context.leagueId, team.id]
     );
@@ -108,7 +108,7 @@ async function assignPlayerToTeam(
     const existingMembership = await transaction.query<{ id: string }>(
       `SELECT id
        FROM team_memberships
-       WHERE league_id = $1 AND league_member_id = $2 AND status = 'ACTIVE'
+       WHERE league_id = ? AND league_member_id = ? AND status = 'ACTIVE'
        FOR UPDATE`,
       [context.leagueId, player.id]
     );
@@ -116,8 +116,8 @@ async function assignPlayerToTeam(
       throw new DomainError("PLAYER_ALREADY_ASSIGNED", "This player already has an active team membership.");
     }
 
-    const rosterCount = await transaction.query<{ count: string }>(
-      "SELECT COUNT(*)::text AS count FROM team_memberships WHERE league_id = $1 AND team_id = $2 AND status = 'ACTIVE'",
+    const rosterCount = await transaction.query<{ count: number | string }>(
+      "SELECT COUNT(*) AS count FROM team_memberships WHERE league_id = ? AND team_id = ? AND status = 'ACTIVE'",
       [context.leagueId, team.id]
     );
     if (Number(rosterCount.rows[0]?.count ?? "0") >= team.rosterCap) {
@@ -161,26 +161,16 @@ async function endTeamMembership(
     }
 
     const player = await findPlayer(transaction, context.leagueId, membership.leagueMemberId);
-    const ended = await transaction.query<TeamMembershipRow>(
+    const ended = await transaction.query(
       `UPDATE team_memberships
-       SET status = 'ENDED', ended_at = NOW(), ended_by_member_id = $1
-       WHERE id = $2 AND league_id = $3 AND status = 'ACTIVE'
-       RETURNING
-         id,
-         league_id AS "leagueId",
-         league_member_id AS "leagueMemberId",
-         team_id AS "teamId",
-         membership_role AS role,
-         status,
-         ended_at AS "endedAt",
-         ended_by_member_id AS "endedByMemberId"`,
+       SET status = 'ENDED', ended_at = UTC_TIMESTAMP(3), ended_by_member_id = ?
+       WHERE id = ? AND league_id = ? AND status = 'ACTIVE'`,
       [context.actor.leagueMemberId ?? null, membership.id, context.leagueId]
     );
-    const updated = ended.rows[0];
-
-    if (!updated) {
+    if (ended.affectedRows !== 1) {
       throw new DomainError("TEAM_MEMBERSHIP_NOT_ACTIVE", "This team membership is no longer active.");
     }
+    const updated = await findMembership(transaction, context.leagueId, membership.id, false);
 
     await audit.appendAuditEvent(transaction, {
       leagueId: context.leagueId,
@@ -209,9 +199,9 @@ async function findTeam(
   lock: boolean
 ): Promise<TeamRow> {
   const result = await transaction.query<TeamRow>(
-    `SELECT id, roster_cap AS "rosterCap", status
+    `SELECT id, roster_cap AS rosterCap, status
      FROM teams
-     WHERE league_id = $1 AND id = $2${lock ? " FOR UPDATE" : ""}`,
+     WHERE league_id = ? AND id = ?${lock ? " FOR UPDATE" : ""}`,
     [leagueId, teamId]
   );
   const team = result.rows[0];
@@ -227,8 +217,8 @@ async function findApprovedPlayer(transaction: SqlTransaction, leagueId: string,
   const approved = await transaction.query<{ id: string }>(
     `SELECT id
      FROM registration_requests
-     WHERE league_id = $1 AND league_member_id = $2 AND status = 'APPROVED'
-     ORDER BY reviewed_at DESC NULLS LAST
+     WHERE league_id = ? AND league_member_id = ? AND status = 'APPROVED'
+     ORDER BY reviewed_at DESC
      LIMIT 1`,
     [leagueId, player.id]
   );
@@ -243,11 +233,11 @@ async function findActivePlayer(transaction: SqlTransaction, leagueId: string, p
   const result = await transaction.query<PlayerRow>(
     `SELECT
        league_members.id,
-       discord_users.discord_user_id AS "discordUserId"
+       discord_users.discord_user_id AS discordUserId
      FROM league_members
      JOIN discord_users ON discord_users.discord_user_id = league_members.discord_user_id
-     WHERE league_members.league_id = $1
-       AND league_members.id = $2
+     WHERE league_members.league_id = ?
+       AND league_members.id = ?
        AND league_members.status = 'ACTIVE'
      FOR UPDATE`,
     [leagueId, playerId]
@@ -264,10 +254,10 @@ async function findPlayer(transaction: SqlTransaction, leagueId: string, playerI
   const result = await transaction.query<PlayerRow>(
     `SELECT
        league_members.id,
-       discord_users.discord_user_id AS "discordUserId"
+       discord_users.discord_user_id AS discordUserId
      FROM league_members
      JOIN discord_users ON discord_users.discord_user_id = league_members.discord_user_id
-     WHERE league_members.league_id = $1 AND league_members.id = $2
+     WHERE league_members.league_id = ? AND league_members.id = ?
      FOR UPDATE`,
     [leagueId, playerId]
   );
@@ -288,15 +278,15 @@ async function findMembership(
   const result = await transaction.query<TeamMembershipRow>(
     `SELECT
        id,
-       league_id AS "leagueId",
-       league_member_id AS "leagueMemberId",
-       team_id AS "teamId",
+       league_id AS leagueId,
+       league_member_id AS leagueMemberId,
+       team_id AS teamId,
        membership_role AS role,
        status,
-       ended_at AS "endedAt",
-       ended_by_member_id AS "endedByMemberId"
+       ended_at AS endedAt,
+       ended_by_member_id AS endedByMemberId
      FROM team_memberships
-     WHERE league_id = $1 AND id = $2${lock ? " FOR UPDATE" : ""}`,
+     WHERE league_id = ? AND id = ?${lock ? " FOR UPDATE" : ""}`,
     [leagueId, membershipId]
   );
   const membership = result.rows[0];
@@ -314,27 +304,14 @@ async function insertMembership(
   teamId: string,
   role: TeamMembershipRole
 ): Promise<TeamMembership> {
+  const membershipId = randomUUID();
   try {
-    const result = await transaction.query<TeamMembershipRow>(
+    await transaction.query(
       `INSERT INTO team_memberships (id, league_id, league_member_id, team_id, membership_role, status)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING
-         id,
-         league_id AS "leagueId",
-         league_member_id AS "leagueMemberId",
-         team_id AS "teamId",
-         membership_role AS role,
-         status,
-         ended_at AS "endedAt",
-         ended_by_member_id AS "endedByMemberId"`,
-      [randomUUID(), leagueId, leagueMemberId, teamId, role, "ACTIVE"]
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [membershipId, leagueId, leagueMemberId, teamId, role, "ACTIVE"]
     );
-    const membership = result.rows[0];
-
-    if (!membership) {
-      throw new DomainError("TEAM_MEMBERSHIP_NOT_FOUND", "The new team membership could not be resolved.");
-    }
-    return membership;
+    return findMembership(transaction, leagueId, membershipId, false);
   } catch (error) {
     if (isActiveMembershipViolation(error)) {
       throw new DomainError("PLAYER_ALREADY_ASSIGNED", "This player already has an active team membership.");
@@ -360,7 +337,8 @@ function isActiveMembershipViolation(error: unknown): boolean {
   return typeof error === "object"
     && error !== null
     && "code" in error
-    && (error as { code?: unknown }).code === "23505"
-    && "constraint" in error
-    && (error as { constraint?: unknown }).constraint === "active_team_membership_per_league";
+    && (error as { code?: unknown }).code === "ER_DUP_ENTRY"
+    && "message" in error
+    && typeof (error as { message?: unknown }).message === "string"
+    && (error as { message: string }).message.includes("active_team_membership_per_league");
 }
