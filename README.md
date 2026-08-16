@@ -15,11 +15,11 @@ It supports league setup, teams, player registration and staff review, capacity-
 1. Install dependencies with `npm install`.
 2. Start MySQL 8 with `docker compose up -d mysql`.
 3. Copy `.env.example` to `.env` and supply your Discord application credentials. Do not commit `.env`.
-4. Apply the production migration with `npm run migrate`. Migration state is recorded in `hybrid_schema_migrations`, so repeat runs are safe.
-5. Register the two global Discord commands with `npm run commands:register`.
-6. Start the app with `npm run dev`.
+4. Start the app with `npm run dev`. Startup applies pending migrations and registers the two Discord commands automatically.
 
-For a compiled launch, use `npm run build` and then `npm start`. The build copies the SQL migration beside the runtime code; startup validates config, applies outstanding migrations, logs in the Discord client, and starts the durable role-sync worker. `SIGINT` and `SIGTERM` stop the worker, Discord client, and database pool cleanly.
+For a compiled launch, use `npm run build` and then `npm start`. The build copies the SQL migration beside the runtime code; startup validates config, applies outstanding migrations, synchronizes the Discord application commands, logs in the Discord client, and starts the durable role-sync worker. `SIGINT` and `SIGTERM` stop the worker, Discord client, and database pool cleanly.
+
+On a managed host with only a startup-file setting, set it to `dist/main.js`. Upload the package, configure `.env`, and start the server; no separate migration or command-registration console command is required.
 
 Hybrid requires MySQL 8.0.46 or newer. Set `DATABASE_URL` to a MySQL URL such as `mysql://USER:PERCENT_ENCODED_PASSWORD@HOST:3306/DATABASE`; never commit it. Use a newly rotated password if a connection string has been shared in chat or screenshots. Tests use an isolated disposable MySQL container and must never run against the production Hybrid schema.
 
@@ -27,7 +27,7 @@ Hybrid requires MySQL 8.0.46 or newer. Set `DATABASE_URL` to a MySQL URL such as
 
 Install the bot with the `bot` and `applications.commands` OAuth2 scopes. The bot needs the Guilds gateway intent. For role synchronization, grant **Manage Roles** and place the bot's highest role above each mapped team role. Initial league setup is limited to Discord members with **Manage Server**; after setup, every action uses Hybrid's application roles and tenant context rather than Discord Administrator.
 
-`npm run commands:register` performs global command registration from `COMMAND_DEFINITIONS`. Global updates may take time to propagate. It registers only `/league` and `/help`.
+Startup synchronizes global commands from `COMMAND_DEFINITIONS`; global updates may take time to propagate. It registers only `/league` and `/help`. `npm run commands:register` remains available for manual registration when needed.
 
 ## Operations
 
