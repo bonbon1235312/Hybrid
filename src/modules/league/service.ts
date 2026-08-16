@@ -8,7 +8,13 @@ import type { LeagueContext, LeagueRole, LeagueService, BootstrapLeagueInput } f
 type LeagueRow = {
   leagueId: string;
   leagueMemberId: string | null;
+};
+
+type RoleRow = {
   role: LeagueRole;
+};
+
+type MembershipRoleRow = RoleRow & {
   teamId: string | null;
 };
 
@@ -94,7 +100,9 @@ async function bootstrapLeague(
       actor: {
         discordUserId: input.actor.discordUserId,
         leagueMemberId,
-        role: "OWNER"
+        role: "OWNER",
+        roles: ["OWNER"],
+        managedTeamIds: []
       }
     };
   });
@@ -105,52 +113,11 @@ async function resolveLeagueContext(
   discordGuildId: string,
   discordUserId: string
 ): Promise<LeagueContext | null> {
-  const result = await database.transaction(async (transaction) => transaction.query<LeagueRow>(
+  const result = await database.transaction(async (transaction) => {
+    const league = await transaction.query<LeagueRow>(
     `SELECT
        leagues.id AS "leagueId",
-       league_members.id AS "leagueMemberId",
-       COALESCE(
-         (
-           SELECT staff_assignments.role
-           FROM staff_assignments
-           WHERE staff_assignments.league_id = leagues.id
-             AND staff_assignments.league_member_id = league_members.id
-             AND staff_assignments.ended_at IS NULL
-           ORDER BY CASE staff_assignments.role
-             WHEN 'OWNER' THEN 1
-             WHEN 'ADMINISTRATOR' THEN 2
-             WHEN 'STAFF' THEN 3
-           END
-           LIMIT 1
-         ),
-         (
-           SELECT team_memberships.membership_role
-           FROM team_memberships
-           WHERE team_memberships.league_id = leagues.id
-             AND team_memberships.league_member_id = league_members.id
-             AND team_memberships.status = 'ACTIVE'
-           ORDER BY CASE team_memberships.membership_role
-             WHEN 'MANAGER' THEN 1
-             WHEN 'CAPTAIN' THEN 2
-             WHEN 'PLAYER' THEN 3
-           END
-           LIMIT 1
-         ),
-         'PLAYER'
-       ) AS role,
-       (
-         SELECT team_memberships.team_id
-         FROM team_memberships
-         WHERE team_memberships.league_id = leagues.id
-           AND team_memberships.league_member_id = league_members.id
-           AND team_memberships.status = 'ACTIVE'
-         ORDER BY CASE team_memberships.membership_role
-           WHEN 'MANAGER' THEN 1
-           WHEN 'CAPTAIN' THEN 2
-           WHEN 'PLAYER' THEN 3
-         END
-         LIMIT 1
-       ) AS "teamId"
+       league_members.id AS "leagueMemberId"
      FROM leagues
      LEFT JOIN league_members
        ON league_members.league_id = leagues.id
@@ -158,23 +125,84 @@ async function resolveLeagueContext(
        AND league_members.status = 'ACTIVE'
      WHERE leagues.discord_guild_id = $1`,
     [discordGuildId, discordUserId]
-  ));
-  const row = result.rows[0];
+    );
+    const row = league.rows[0];
 
-  if (!row) {
-    return null;
-  }
+    if (!row) {
+      return null;
+    }
+
+    if (!row.leagueMemberId) {
+      return createContext(row.leagueId, discordGuildId, discordUserId, ["PLAYER"], []);
+    }
+
+    const staffAssignments = await transaction.query<RoleRow>(
+      `SELECT role
+       FROM staff_assignments
+       WHERE league_id = $1 AND league_member_id = $2 AND ended_at IS NULL`,
+      [row.leagueId, row.leagueMemberId]
+    );
+    const memberships = await transaction.query<MembershipRoleRow>(
+      `SELECT membership_role AS role, team_id AS "teamId"
+       FROM team_memberships
+       WHERE league_id = $1 AND league_member_id = $2 AND status = 'ACTIVE'`,
+      [row.leagueId, row.leagueMemberId]
+    );
+    const roles = uniqueRoles([
+      ...staffAssignments.rows.map((assignment) => assignment.role),
+      ...memberships.rows.map((membership) => membership.role)
+    ]);
+    const managedTeamIds = memberships.rows.flatMap((membership) => (
+      membership.role === "MANAGER" && membership.teamId ? [membership.teamId] : []
+    ));
+
+    return createContext(row.leagueId, discordGuildId, discordUserId, roles, managedTeamIds, row.leagueMemberId);
+  });
+
+  return result;
+}
+
+function createContext(
+  leagueId: string,
+  discordGuildId: string,
+  discordUserId: string,
+  roles: readonly LeagueRole[],
+  managedTeamIds: readonly string[],
+  leagueMemberId?: string
+): LeagueContext {
+  const primaryRole = roles[0] ?? "PLAYER";
+  const teamId = managedTeamIds[0];
 
   return {
-    leagueId: row.leagueId,
+    leagueId,
     discordGuildId,
     actor: {
       discordUserId,
-      role: row.role,
-      ...(row.leagueMemberId ? { leagueMemberId: row.leagueMemberId } : {}),
-      ...(row.teamId ? { teamId: row.teamId } : {})
+      role: primaryRole,
+      roles,
+      managedTeamIds,
+      ...(leagueMemberId ? { leagueMemberId } : {}),
+      ...(teamId ? { teamId } : {})
     }
   };
+}
+
+function uniqueRoles(roles: readonly LeagueRole[]): LeagueRole[] {
+  const roleRank: Readonly<Record<LeagueRole, number>> = {
+    OWNER: 1,
+    ADMINISTRATOR: 2,
+    STAFF: 3,
+    MANAGER: 4,
+    CAPTAIN: 5,
+    PLAYER: 6
+  };
+  const unique = new Set(roles);
+
+  if (unique.size === 0) {
+    return ["PLAYER"];
+  }
+
+  return [...unique].sort((left, right) => roleRank[left] - roleRank[right]);
 }
 
 function validateBootstrapInput(input: BootstrapLeagueInput): void {

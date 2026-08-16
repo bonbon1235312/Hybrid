@@ -11,8 +11,22 @@ const permissionsByRole: Readonly<Record<LeagueRole, readonly Permission[]>> = {
   PLAYER: []
 };
 
-export function requirePermission(context: LeagueContext, permission: Permission): void {
-  if (!permissionsByRole[context.actor.role].includes(permission)) {
+export function requirePermission(context: LeagueContext, permission: Permission, teamId?: string): void {
+  const hasPermission = context.actor.roles.some((role) => permissionsByRole[role].includes(permission));
+
+  if (!hasPermission || isOutsideManagerScope(context, permission, teamId)) {
     throw new DomainError("FORBIDDEN", "You are not permitted to perform this action.");
   }
+}
+
+function isOutsideManagerScope(context: LeagueContext, permission: Permission, teamId: string | undefined): boolean {
+  if (permission !== "ROSTER_MANAGE" || !teamId) {
+    return false;
+  }
+
+  const hasLeagueWideRosterAuthority = context.actor.roles.some(
+    (role) => role === "OWNER" || role === "ADMINISTRATOR"
+  );
+
+  return !hasLeagueWideRosterAuthority && !context.actor.managedTeamIds.includes(teamId);
 }

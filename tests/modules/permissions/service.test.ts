@@ -39,6 +39,8 @@ function seedLeagueContext(input: { role: LeagueContext["actor"]["role"]; discor
       discordUserId: "player-1",
       leagueMemberId: "00000000-0000-4000-8000-000000000011",
       role: input.role,
+      roles: [input.role],
+      managedTeamIds: [],
       ...(input.discordAdministrator === undefined ? {} : { discordAdministrator: input.discordAdministrator })
     }
   };

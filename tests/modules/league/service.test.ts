@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { createLeagueService } from "../../../src/modules/league/service.js";
+import { requirePermission } from "../../../src/modules/permissions/service.js";
 import { createTestDatabase } from "../../../src/platform/test-db.js";
 
 describe("LeagueService", () => {
@@ -136,6 +137,56 @@ describe("LeagueService", () => {
       await expect(leagueService.resolveLeagueContext("guild-1", "new-player"))
         .resolves.toMatchObject({ actor: { discordUserId: "new-player", role: "PLAYER" } });
       await expect(leagueService.resolveLeagueContext("unknown-guild", "owner-1")).resolves.toBeNull();
+    } finally {
+      await database.dispose();
+    }
+  });
+
+  it("combines staff review and manager roster grants without expanding the manager team scope", async () => {
+    const database = await createTestDatabase();
+    const leagueService = createLeagueService(database);
+
+    try {
+      const league = await leagueService.bootstrapLeague({
+        discordGuildId: "guild-1",
+        actor: member("owner-1", { manageGuild: true }),
+        name: "Hybrid League",
+        defaultRosterCap: 12
+      });
+      const memberId = randomUUID();
+      const managedTeamId = randomUUID();
+      const otherTeamId = randomUUID();
+
+      await database.query("INSERT INTO discord_users (discord_user_id, display_name) VALUES ($1, $2)", ["staff-manager-1", "Staff Manager"]);
+      await database.query(
+        "INSERT INTO league_members (id, league_id, discord_user_id) VALUES ($1, $2, $3)",
+        [memberId, league.leagueId, "staff-manager-1"]
+      );
+      await database.query(
+        "INSERT INTO teams (id, league_id, name, normalized_name, roster_cap) VALUES ($1, $2, $3, $4, $5), ($6, $2, $7, $8, $5)",
+        [managedTeamId, league.leagueId, "Northstar", "northstar", 12, otherTeamId, "Southstar", "southstar"]
+      );
+      await database.query(
+        "INSERT INTO team_memberships (id, league_id, league_member_id, team_id, membership_role) VALUES ($1, $2, $3, $4, $5)",
+        [randomUUID(), league.leagueId, memberId, managedTeamId, "MANAGER"]
+      );
+      await database.query(
+        "INSERT INTO staff_assignments (id, league_id, league_member_id, role) VALUES ($1, $2, $3, $4)",
+        [randomUUID(), league.leagueId, memberId, "STAFF"]
+      );
+
+      const context = await leagueService.resolveLeagueContext("guild-1", "staff-manager-1");
+
+      expect(context).not.toBeNull();
+      if (!context) {
+        throw new Error("Expected an existing league context");
+      }
+      expect(context.actor.teamId).toBe(managedTeamId);
+      expect(context.actor.roles).toEqual(["STAFF", "MANAGER"]);
+      expect(context.actor.managedTeamIds).toEqual([managedTeamId]);
+      expect(() => requirePermission(context, "REGISTRATION_REVIEW")).not.toThrow();
+      expect(() => requirePermission(context, "ROSTER_MANAGE", managedTeamId)).not.toThrow();
+      expect(() => requirePermission(context, "ROSTER_MANAGE", otherTeamId)).toThrow(/not permitted/i);
     } finally {
       await database.dispose();
     }
