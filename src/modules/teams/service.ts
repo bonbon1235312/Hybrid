@@ -120,9 +120,10 @@ async function createTeam(
 ): Promise<TeamDashboard> {
   requirePermission(context, "TEAM_MANAGE");
   const team = validateTeamInput(input);
+  const discordRoleId = team.discordRoleId ? validateDiscordRoleId(context, team.discordRoleId) : undefined;
 
   return withTransaction(database, async (transaction) => {
-    await ensureTeamIsAvailable(transaction, context.leagueId, team.normalizedName, team.discordRoleId);
+    await ensureTeamIsAvailable(transaction, context.leagueId, team.normalizedName, discordRoleId);
 
     let result: { rows: TeamRow[] };
 
@@ -145,8 +146,8 @@ async function createTeam(
           team.normalizedName,
           team.rosterCap,
           "ACTIVE",
-          team.discordRoleId ?? null,
-          team.discordRoleId ? "AVAILABLE" : "UNMAPPED"
+          discordRoleId ?? null,
+          discordRoleId ? "AVAILABLE" : "UNMAPPED"
         ]
       );
     } catch (error) {

@@ -206,6 +206,32 @@ describe("TeamService", () => {
       await database.dispose();
     }
   });
+
+  it("rejects @everyone during team creation before any team, audit, or job write", async () => {
+    const database = await createTestDatabase();
+    const leagues = createLeagueService(database);
+    const audit = createAuditRepository(database);
+    const jobs = createDiscordJobRepository(database);
+    const teams = createTeamService(database, audit, jobs);
+
+    try {
+      const owner = await leagues.bootstrapLeague(bootstrapInput("guild-1", "owner-1"));
+      const auditCountBefore = await rowCount(database, "audit_events");
+      const jobCountBefore = await rowCount(database, "discord_jobs");
+
+      await expect(teams.createTeam(owner, {
+        name: "Northstar",
+        rosterCap: 12,
+        discordRoleId: owner.discordGuildId
+      })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+
+      expect(await rowCount(database, "teams")).toBe(0);
+      expect(await rowCount(database, "audit_events")).toBe(auditCountBefore);
+      expect(await rowCount(database, "discord_jobs")).toBe(jobCountBefore);
+    } finally {
+      await database.dispose();
+    }
+  });
 });
 
 function bootstrapInput(discordGuildId: string, discordUserId: string) {
