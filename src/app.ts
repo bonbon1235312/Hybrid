@@ -15,7 +15,7 @@ import { createRouteStore } from "./discord/ui/route-store.js";
 import type { AppConfig } from "./platform/config.js";
 import type { TransactionalDatabase } from "./platform/database.js";
 import { createLogger } from "./platform/logger.js";
-import { createDatabase } from "./platform/postgres.js";
+import { createDatabase } from "./platform/mysql.js";
 
 type ClosableDatabase = TransactionalDatabase & Readonly<{
   close?: () => Promise<void>;

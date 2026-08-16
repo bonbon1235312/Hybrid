@@ -1,8 +1,13 @@
+export type SqlQueryResult<T extends Record<string, unknown>> = Readonly<{
+  rows: T[];
+  affectedRows?: number;
+}>;
+
 export type SqlTransaction = {
   query<T extends Record<string, unknown> = Record<string, unknown>>(
     statement: string,
     parameters?: unknown[]
-  ): Promise<{ rows: T[] }>;
+  ): Promise<SqlQueryResult<T>>;
 };
 
 export type TransactionalDatabase = {
