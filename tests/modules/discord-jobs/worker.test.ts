@@ -97,9 +97,9 @@ async function createFixture() {
   const database = await createTestDatabase();
   const leagues = createLeagueService(database);
   const audit = createAuditRepository(database);
-  const teams = createTeamService(database, audit);
-  const registrations = createRegistrationService(database, audit);
   const jobs = createDiscordJobRepository(database);
+  const teams = createTeamService(database, audit, jobs);
+  const registrations = createRegistrationService(database, audit);
   const rosters = createRosterService(database, audit, jobs);
   const owner = await leagues.bootstrapLeague({
     discordGuildId: "guild-1",

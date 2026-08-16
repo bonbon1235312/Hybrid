@@ -8,6 +8,11 @@ export type CreateTeamInput = Readonly<{
   discordRoleId?: string;
 }>;
 
+export type SetTeamDiscordRoleInput = Readonly<{
+  teamId: string;
+  discordRoleId: string;
+}>;
+
 export type TeamManager = Readonly<{
   leagueMemberId: string;
   discordUserId: string;
@@ -30,4 +35,5 @@ export type TeamService = Readonly<{
   getTeamDashboard(context: LeagueContext, teamId: string): Promise<TeamDashboard>;
   listTeams(context: LeagueContext): Promise<TeamDashboard[]>;
   setTeamStatus(context: LeagueContext, teamId: string, status: TeamStatus): Promise<TeamDashboard>;
+  setTeamDiscordRole(context: LeagueContext, input: SetTeamDiscordRoleInput): Promise<TeamDashboard>;
 }>;

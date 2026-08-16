@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createAuditRepository } from "../../../src/modules/audit/repository.js";
+import { createDiscordJobRepository } from "../../../src/modules/discord-jobs/repository.js";
 import { createLeagueService } from "../../../src/modules/league/service.js";
 import { createTeamService } from "../../../src/modules/teams/service.js";
 import type { TransactionalDatabase } from "../../../src/platform/database.js";
@@ -11,7 +12,7 @@ describe("TeamService", () => {
     const database = await createTestDatabase();
     const leagues = createLeagueService(database);
     const audit = createAuditRepository(database);
-    const teams = createTeamService(database, audit);
+    const teams = createTeamService(database, audit, createDiscordJobRepository(database));
 
     try {
       const ownerContext = await leagues.bootstrapLeague(bootstrapInput("guild-1", "owner-1"));
@@ -44,7 +45,7 @@ describe("TeamService", () => {
     const database = await createTestDatabase();
     const leagues = createLeagueService(database);
     const audit = createAuditRepository(database);
-    const teams = createTeamService(database, audit);
+    const teams = createTeamService(database, audit, createDiscordJobRepository(database));
 
     try {
       const leagueAOwner = await leagues.bootstrapLeague(bootstrapInput("guild-a", "owner-a"));
@@ -71,7 +72,7 @@ describe("TeamService", () => {
     const database = await createTestDatabase();
     const leagues = createLeagueService(database);
     const audit = createAuditRepository(database);
-    const teams = createTeamService(database, audit);
+    const teams = createTeamService(database, audit, createDiscordJobRepository(database));
 
     try {
       const ownerContext = await leagues.bootstrapLeague(bootstrapInput("guild-1", "owner-1"));
@@ -90,7 +91,7 @@ describe("TeamService", () => {
     const database = await createTestDatabase();
     const leagues = createLeagueService(database);
     const audit = createAuditRepository(database);
-    const teams = createTeamService(hideTeamAvailabilityChecks(database), audit);
+    const teams = createTeamService(hideTeamAvailabilityChecks(database), audit, createDiscordJobRepository(database));
 
     try {
       const ownerContext = await leagues.bootstrapLeague(bootstrapInput("guild-1", "owner-1"));
@@ -111,7 +112,7 @@ describe("TeamService", () => {
     const database = await createTestDatabase();
     const leagues = createLeagueService(database);
     const audit = createAuditRepository(database);
-    const teams = createTeamService(hideTeamAvailabilityChecks(database), audit);
+    const teams = createTeamService(hideTeamAvailabilityChecks(database), audit, createDiscordJobRepository(database));
 
     try {
       const ownerContext = await leagues.bootstrapLeague(bootstrapInput("guild-1", "owner-1"));
@@ -132,7 +133,7 @@ describe("TeamService", () => {
     const database = await createTestDatabase();
     const leagues = createLeagueService(database);
     const audit = createAuditRepository(database);
-    const teams = createTeamService(database, audit);
+    const teams = createTeamService(database, audit, createDiscordJobRepository(database));
 
     try {
       const ownerContext = await leagues.bootstrapLeague(bootstrapInput("guild-1", "owner-1"));
@@ -158,7 +159,7 @@ describe("TeamService", () => {
     const database = await createTestDatabase();
     const leagues = createLeagueService(database);
     const audit = createAuditRepository(database);
-    const teams = createTeamService(database, audit);
+    const teams = createTeamService(database, audit, createDiscordJobRepository(database));
 
     try {
       const ownerContext = await leagues.bootstrapLeague(bootstrapInput("guild-1", "owner-1"));
@@ -171,6 +172,36 @@ describe("TeamService", () => {
         { action: "team.created" },
         { action: "team.status_changed", afterState: { status: "INACTIVE" } }
       ]);
+    } finally {
+      await database.dispose();
+    }
+  });
+
+  it("maps a tenant Discord role atomically, rejects @everyone and duplicate mappings", async () => {
+    const database = await createTestDatabase();
+    const leagues = createLeagueService(database);
+    const audit = createAuditRepository(database);
+    const jobs = createDiscordJobRepository(database);
+    const teams = createTeamService(database, audit, jobs);
+
+    try {
+      const owner = await leagues.bootstrapLeague(bootstrapInput("guild-1", "owner-1"));
+      const otherOwner = await leagues.bootstrapLeague(bootstrapInput("guild-2", "owner-2"));
+      const first = await teams.createTeam(owner, { name: "Northstar", rosterCap: 12 });
+      const second = await teams.createTeam(owner, { name: "Southstar", rosterCap: 12 });
+
+      await expect(teams.setTeamDiscordRole(owner, { teamId: first.id, discordRoleId: "role-northstar" }))
+        .resolves.toMatchObject({ id: first.id, discordRoleId: "role-northstar", discordRoleState: "AVAILABLE" });
+      await expect(audit.listEntityHistory(owner, "team", first.id)).resolves.toMatchObject([
+        { action: "team.created" },
+        { action: "team.discord_role_mapped", afterState: { discordRoleId: "role-northstar", discordRoleState: "AVAILABLE" } }
+      ]);
+      await expect(teams.setTeamDiscordRole(owner, { teamId: second.id, discordRoleId: "role-northstar" }))
+        .rejects.toMatchObject({ code: "DISCORD_ROLE_ALREADY_MAPPED" });
+      await expect(teams.setTeamDiscordRole(owner, { teamId: first.id, discordRoleId: "guild-1" }))
+        .rejects.toMatchObject({ code: "INVALID_INPUT" });
+      await expect(teams.setTeamDiscordRole(otherOwner, { teamId: first.id, discordRoleId: "role-other" }))
+        .rejects.toMatchObject({ code: "TEAM_NOT_FOUND" });
     } finally {
       await database.dispose();
     }

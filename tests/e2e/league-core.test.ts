@@ -23,8 +23,7 @@ describe("Hybrid League Core", () => {
       });
       const team = await app.services.teams.createTeam(owner, {
         name: "Northstar",
-        rosterCap: 2,
-        discordRoleId: "role-northstar"
+        rosterCap: 2
       });
       const player = await app.services.leagues.resolveLeagueContext("guild-1", "player-1");
       if (!player) {
@@ -37,11 +36,12 @@ describe("Hybrid League Core", () => {
         playerId: registration.leagueMemberId,
         role: "PLAYER"
       });
+      await app.services.teams.setTeamDiscordRole(owner, { teamId: team.id, discordRoleId: "role-northstar" });
       await app.worker.runOnce();
 
       const audits = await database.query<{ action: string }>("SELECT action FROM audit_events ORDER BY created_at ASC, id ASC");
       expect(audits.rows.map((event) => event.action)).toEqual(expect.arrayContaining([
-        "league.created", "team.created", "registration.requested", "registration.approved", "roster.player_assigned"
+        "league.created", "team.created", "registration.requested", "registration.approved", "roster.player_assigned", "team.discord_role_mapped"
       ]));
       expect(gateway.rolesFor("guild-1", "player-1")).toEqual(new Set(["role-northstar"]));
     } finally {

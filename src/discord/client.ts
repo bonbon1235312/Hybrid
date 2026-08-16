@@ -6,6 +6,7 @@ import {
   GatewayIntentBits,
   ModalBuilder,
   PermissionFlagsBits,
+  RoleSelectMenuBuilder,
   StringSelectMenuBuilder,
   UserSelectMenuBuilder,
   TextInputBuilder,
@@ -75,7 +76,7 @@ function isUnknownRole(error: unknown): boolean {
 }
 
 function adaptInteraction(interaction: Interaction): InteractionLike | null {
-  if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isUserSelectMenu() && !interaction.isModalSubmit()) {
+  if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isStringSelectMenu() && !interaction.isUserSelectMenu() && !interaction.isRoleSelectMenu() && !interaction.isModalSubmit()) {
     return null;
   }
 
@@ -115,7 +116,7 @@ function adaptInteraction(interaction: Interaction): InteractionLike | null {
   return {
     ...base,
     customId: interaction.customId,
-    ...(interaction.isStringSelectMenu() || interaction.isUserSelectMenu() ? { values: interaction.values } : {}),
+    ...(interaction.isStringSelectMenu() || interaction.isUserSelectMenu() || interaction.isRoleSelectMenu() ? { values: interaction.values } : {}),
     isButton: () => interaction.isButton(),
     isStringSelectMenu: () => interaction.isStringSelectMenu(),
     isModalSubmit: () => interaction.isModalSubmit(),
@@ -143,12 +144,13 @@ function toDiscordReply(options: InteractionReplyOptions) {
 
 function toDiscordRow(row: Readonly<{ components: readonly ReplyComponent[] }>) {
   const components = row.components.map((component) => toDiscordComponent(component));
-  return new ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder | UserSelectMenuBuilder>().addComponents(components);
+  return new ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder | UserSelectMenuBuilder | RoleSelectMenuBuilder>().addComponents(components);
 }
 
-function toDiscordComponent(component: ReplyComponent): ButtonBuilder | StringSelectMenuBuilder | UserSelectMenuBuilder {
+function toDiscordComponent(component: ReplyComponent): ButtonBuilder | StringSelectMenuBuilder | UserSelectMenuBuilder | RoleSelectMenuBuilder {
   const data = component.data;
   if (data.type === "user-select") return new UserSelectMenuBuilder().setCustomId(data.customId);
+  if (data.type === "role-select") return new RoleSelectMenuBuilder().setCustomId(data.customId);
   if (data.type === "select") {
     return new StringSelectMenuBuilder()
       .setCustomId(data.customId)

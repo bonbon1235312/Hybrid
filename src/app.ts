@@ -60,7 +60,7 @@ export async function createHybridApplication(dependencies: HybridApplicationDep
   const jobs = createDiscordJobRepository(database);
   const services: ApplicationServices = {
     leagues: createLeagueService(database),
-    teams: createTeamService(database, audit),
+    teams: createTeamService(database, audit, jobs),
     registrations: createRegistrationService(database, audit),
     rosters: createRosterService(database, audit, jobs),
     routes,

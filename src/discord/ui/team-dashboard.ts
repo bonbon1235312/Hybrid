@@ -1,6 +1,6 @@
 import type { TeamMembership } from "../../modules/rosters/types.js";
 import type { TeamDashboard } from "../../modules/teams/types.js";
-import type { ComponentRouteIssuer, InteractionReplyOptions } from "../types.js";
+import type { ComponentRouteIssuer, InteractionReplyOptions, ReplyComponent } from "../types.js";
 
 export async function renderTeamDashboard(input: Readonly<{
   team: TeamDashboard;
@@ -8,11 +8,20 @@ export async function renderTeamDashboard(input: Readonly<{
   guildId: string;
   routes: ComponentRouteIssuer;
   canManageRoster: boolean;
+  canManageTeam: boolean;
   memberships: readonly TeamMembership[];
 }>): Promise<InteractionReplyOptions> {
-  const action = input.canManageRoster
+  const actions: ReplyComponent[] = input.canManageRoster
     ? [{ data: { type: "button" as const, label: "Assign player", style: "primary" as const, customId: await input.routes.issue({ guildId: input.guildId, action: "roster.assign", entityId: input.team.id, actorId: input.actorId }) } }]
     : [];
+  if (input.canManageTeam) {
+    actions.push({ data: {
+      type: "button",
+      label: input.team.discordRoleId ? "Change Discord role" : "Map Discord role",
+      style: "secondary",
+      customId: await input.routes.issue({ guildId: input.guildId, action: "team.role.map", entityId: input.team.id, actorId: input.actorId })
+    } });
+  }
 
   return {
     content: `**${input.team.name}** · ${input.team.rosterCount}/${input.team.rosterCap}\n${input.team.status} · Discord role ${input.team.discordRoleState.toLowerCase()}`,
@@ -20,7 +29,7 @@ export async function renderTeamDashboard(input: Readonly<{
     components: [
       {
         components: [
-        ...action,
+        ...actions,
         { data: { type: "button", label: "Home", style: "secondary", customId: await input.routes.issue({ guildId: input.guildId, action: "home", actorId: input.actorId }) } },
         { data: { type: "button", label: "Back", style: "secondary", customId: await input.routes.issue({ guildId: input.guildId, action: "back", actorId: input.actorId }) } }
         ]

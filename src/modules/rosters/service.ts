@@ -94,6 +94,9 @@ async function assignPlayerToTeam(
   return withTransaction(database, async (transaction) => {
     const team = await findTeam(transaction, context.leagueId, input.teamId, true);
     requirePermission(context, "ROSTER_MANAGE", team.id);
+    if (input.role !== "PLAYER") {
+      requirePermission(context, "TEAM_MANAGE");
+    }
 
     if (team.status !== "ACTIVE") {
       throw new DomainError("TEAM_NOT_ACTIVE", "This team is not active.");

@@ -4,6 +4,7 @@ import { createHybridApplication } from "../../src/app.js";
 import { routeComponent } from "../../src/discord/router.js";
 import type { ComponentInteractionLike, InteractionReplyOptions, ModalOptions } from "../../src/discord/types.js";
 import type { DiscordRoleGateway } from "../../src/modules/discord-jobs/worker.js";
+import type { LeagueContext } from "../../src/modules/league/types.js";
 import { createTestDatabase } from "../../src/platform/test-db.js";
 
 describe("guided League Core router", () => {
@@ -28,7 +29,22 @@ describe("guided League Core router", () => {
       const submit = component(modal?.customId ?? "", "owner-1", { "team-name": "Northstar", "roster-cap": "8" });
       await routeComponent(submit, fixture.app.services);
 
-      await expect(fixture.app.services.teams.listTeams(owner)).resolves.toMatchObject([{ name: "Northstar", rosterCap: 8 }]);
+      const [createdTeam] = await fixture.app.services.teams.listTeams(owner);
+      if (!createdTeam) throw new Error("Expected the created team.");
+      expect(createdTeam).toMatchObject({ name: "Northstar", rosterCap: 8 });
+
+      const mapRole = component(await fixture.app.services.routes.issue({
+        guildId: "guild-1", actorId: "owner-1", action: "team.role.map", entityId: createdTeam.id
+      }), "owner-1");
+      await routeComponent(mapRole, fixture.app.services);
+      const roleSelect = mapRole.edits.at(-1)?.components?.flatMap((row) => row.components)
+        .find((control) => control.data.type === "role-select");
+      expect(roleSelect?.data.customId).toMatch(/^h3\./);
+
+      const selectRole = component(roleSelect?.data.customId ?? "", "owner-1", undefined, ["role-northstar"]);
+      await routeComponent(selectRole, fixture.app.services);
+      await expect(fixture.app.services.teams.getTeamDashboard(owner, createdTeam.id))
+        .resolves.toMatchObject({ discordRoleId: "role-northstar", discordRoleState: "AVAILABLE" });
     } finally {
       await fixture.app.stop();
     }
@@ -59,10 +75,20 @@ describe("guided League Core router", () => {
 
       const select = component(userSelect?.data.customId ?? "", "owner-1", undefined, ["player-1"]);
       await routeComponent(select, fixture.app.services);
+      const roleSelect = select.edits.at(-1)?.components?.flatMap((row) => row.components)
+        .find((control) => control.data.type === "select");
+      expect(roleSelect?.data.options?.map((option) => option.value)).toEqual(["PLAYER", "CAPTAIN", "MANAGER"]);
+
+      const chooseCaptain = component(roleSelect?.data.customId ?? "", "owner-1", undefined, ["CAPTAIN"]);
+      await routeComponent(chooseCaptain, fixture.app.services);
+      const confirm = chooseCaptain.edits.at(-1)?.components?.flatMap((row) => row.components)
+        .find((control) => control.data.label === "Confirm");
+      const confirmAssignment = component(confirm?.data.customId ?? "", "owner-1");
+      await routeComponent(confirmAssignment, fixture.app.services);
 
       await expect(fixture.app.services.rosters.listActiveTeamMemberships(owner, team.id))
-        .resolves.toMatchObject([{ leagueMemberId: registration.leagueMemberId, role: "PLAYER" }]);
-      expect(select.edits.at(-1)?.content).toBe("Player assigned. Discord role sync is queued.");
+        .resolves.toMatchObject([{ leagueMemberId: registration.leagueMemberId, role: "CAPTAIN" }]);
+      expect(confirmAssignment.edits.at(-1)?.content).toBe("Captain assigned. Discord role sync is queued.");
     } finally {
       await fixture.app.stop();
     }
@@ -75,6 +101,38 @@ describe("guided League Core router", () => {
       const interaction = component(customId, "owner-2");
 
       await expect(routeComponent(interaction, fixture.app.services)).rejects.toMatchObject({ code: "ACTION_EXPIRED" });
+    } finally {
+      await fixture.app.stop();
+    }
+  });
+
+  it("shows a team manager only the Player role while preserving their own-team assignment path", async () => {
+    const fixture = await createFixture();
+    try {
+      const owner = await fixture.app.services.leagues.bootstrapLeague({
+        discordGuildId: "guild-1",
+        actor: { discordUserId: "owner-1", displayName: "Owner", manageGuild: true },
+        name: "Hybrid League",
+        defaultRosterCap: 12
+      });
+      const team = await fixture.app.services.teams.createTeam(owner, { name: "Northstar", rosterCap: 8 });
+      const manager = await registerAndApprove(fixture.app, owner, "manager-1");
+      const player = await registerAndApprove(fixture.app, owner, "player-1");
+      await fixture.app.services.rosters.assignPlayerToTeam(owner, { teamId: team.id, playerId: manager.leagueMemberId, role: "MANAGER" });
+
+      const open = component(await fixture.app.services.routes.issue({
+        guildId: "guild-1", actorId: "manager-1", action: "roster.assign", entityId: team.id
+      }), "manager-1");
+      await routeComponent(open, fixture.app.services);
+      const userSelect = open.edits.at(-1)?.components?.flatMap((row) => row.components)
+        .find((control) => control.data.type === "user-select");
+      const choosePlayer = component(userSelect?.data.customId ?? "", "manager-1", undefined, ["player-1"]);
+      await routeComponent(choosePlayer, fixture.app.services);
+      const roleSelect = choosePlayer.edits.at(-1)?.components?.flatMap((row) => row.components)
+        .find((control) => control.data.type === "select");
+
+      expect(roleSelect?.data.options?.map((option) => option.value)).toEqual(["PLAYER"]);
+      expect(player.leagueMemberId).toBeDefined();
     } finally {
       await fixture.app.stop();
     }
@@ -97,6 +155,18 @@ const noOpGateway: DiscordRoleGateway = {
   removeMemberRole: async () => undefined,
   roleExists: async () => false
 };
+
+async function registerAndApprove(
+  app: Awaited<ReturnType<typeof createHybridApplication>>,
+  owner: LeagueContext,
+  discordUserId: string
+) {
+  const player = await app.services.leagues.resolveLeagueContext("guild-1", discordUserId);
+  if (!player) throw new Error("Expected player league context.");
+  const registration = await app.services.registrations.requestRegistration(player, { displayName: discordUserId });
+  await app.services.registrations.reviewRegistration(owner, { registrationId: registration.id, decision: "APPROVE" });
+  return registration;
+}
 
 function component(
   customId: string,

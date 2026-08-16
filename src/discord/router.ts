@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { LeagueContext } from "../modules/league/types.js";
+import type { TeamMembershipRole } from "../modules/rosters/types.js";
 import { DomainError } from "../platform/errors.js";
 import { renderConfirmation } from "./ui/confirmation.js";
 import { renderLeagueDashboard } from "./ui/league-dashboard.js";
@@ -179,19 +180,50 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
       const team = await services.teams.getTeamDashboard(context, route.entityId);
       const canManageRoster = context.actor.managedTeamIds.includes(route.entityId)
         || context.actor.roles.includes("OWNER") || context.actor.roles.includes("ADMINISTRATOR");
+      const canManageTeam = context.actor.roles.includes("OWNER") || context.actor.roles.includes("ADMINISTRATOR");
       await interaction.editReply(await renderTeamDashboard({
         team,
         actorId: interaction.user.id,
         guildId,
         routes: services.routes,
         canManageRoster,
+        canManageTeam,
         memberships: canManageRoster ? await services.rosters.listActiveTeamMemberships(context, team.id) : []
+      }));
+      return;
+    }
+    case "team.role.map":
+      requireContext(context);
+      requireEntity(route);
+      services.leagues.requirePermission(context, "TEAM_MANAGE");
+      await interaction.deferUpdate();
+      await services.teams.getTeamDashboard(context, route.entityId);
+      await interaction.editReply(await renderRoleMappingPicker(interaction, services, route.entityId));
+      return;
+    case "team.role.select": {
+      requireContext(context);
+      requireEntity(route);
+      const discordRoleId = interaction.values?.[0];
+      if (!discordRoleId) {
+        throw new DomainError("INVALID_INPUT", "Choose a Discord role from this server.");
+      }
+      await interaction.deferUpdate();
+      const team = await services.teams.setTeamDiscordRole(context, { teamId: route.entityId, discordRoleId });
+      await interaction.editReply(await renderTeamDashboard({
+        team,
+        actorId: interaction.user.id,
+        guildId,
+        routes: services.routes,
+        canManageRoster: true,
+        canManageTeam: true,
+        memberships: await services.rosters.listActiveTeamMemberships(context, team.id)
       }));
       return;
     }
     case "roster.assign":
       requireContext(context);
       requireEntity(route);
+      services.leagues.requirePermission(context, "ROSTER_MANAGE", route.entityId);
       await interaction.deferUpdate();
       await services.teams.getTeamDashboard(context, route.entityId);
       await interaction.editReply({
@@ -215,13 +247,48 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
     case "roster.assign.player": {
       requireContext(context);
       requireEntity(route);
+      services.leagues.requirePermission(context, "ROSTER_MANAGE", route.entityId);
       const discordUserId = interaction.values?.[0];
       if (!discordUserId) {
         throw new DomainError("INVALID_INPUT", "Choose a player from this server.");
       }
-      // Resolve the selected Discord user at action time rather than trusting
-      // any cached roster value or client-provided application identity.
-      const playerContext = await services.leagues.resolveLeagueContext(guildId, discordUserId);
+      await interaction.deferUpdate();
+      await services.teams.getTeamDashboard(context, route.entityId);
+      await interaction.editReply(await renderRosterRolePicker(interaction, services, route.entityId, discordUserId, context));
+      return;
+    }
+    case "roster.assign.role": {
+      requireContext(context);
+      requireEntity(route);
+      services.leagues.requirePermission(context, "ROSTER_MANAGE", route.entityId);
+      const selectedRole = interaction.values?.[0];
+      const discordUserId = selectedDiscordUserId(route);
+      if (!isTeamMembershipRole(selectedRole)) {
+        throw new DomainError("INVALID_INPUT", "Choose a valid team role.");
+      }
+      if (selectedRole !== "PLAYER") {
+        services.leagues.requirePermission(context, "TEAM_MANAGE");
+      }
+      await interaction.deferUpdate();
+      await interaction.editReply(await renderConfirmation({
+        actorId: interaction.user.id,
+        guildId,
+        routes: services.routes,
+        action: "roster.assign.confirm",
+        entityId: route.entityId,
+        title: `Assign ${roleLabel(selectedRole)}?`,
+        detail: "Hybrid rechecks the player and team immediately before applying this roster role.",
+        state: { discordUserId, role: selectedRole }
+      }));
+      return;
+    }
+    case "roster.assign.confirm": {
+      requireContext(context);
+      requireEntity(route);
+      const assignment = assignmentState(route);
+      // The durable route intentionally stores only the selected Discord user
+      // and role. Both player identity and team state are reloaded live here.
+      const playerContext = await services.leagues.resolveLeagueContext(guildId, assignment.discordUserId);
       if (!playerContext?.actor.leagueMemberId) {
         throw new DomainError("PLAYER_NOT_APPROVED", "That Discord member has no active league membership.");
       }
@@ -230,9 +297,9 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
       await services.rosters.assignPlayerToTeam(context, {
         teamId: route.entityId,
         playerId: playerContext.actor.leagueMemberId,
-        role: "PLAYER"
+        role: assignment.role
       });
-      await interaction.editReply({ content: "Player assigned. Discord role sync is queued.", ephemeral: true });
+      await interaction.editReply({ content: `${roleLabel(assignment.role)} assigned. Discord role sync is queued.`, ephemeral: true });
       return;
     }
     case "roster.release":
@@ -377,6 +444,65 @@ async function teamCreationModal(interaction: ComponentInteractionLike, services
   };
 }
 
+async function renderRoleMappingPicker(
+  interaction: ComponentInteractionLike,
+  services: ApplicationServices,
+  teamId: string
+): Promise<InteractionReplyOptions> {
+  const guildId = requiredGuildId(interaction);
+  return {
+    content: "**Map Discord role**\nChoose the team role from this server. Hybrid never asks for a raw role ID.",
+    ephemeral: true,
+    components: [
+      { components: [{ data: {
+        type: "role-select",
+        customId: await services.routes.issue({ guildId, actorId: interaction.user.id, action: "team.role.select", entityId: teamId })
+      } }] },
+      { components: [{ data: {
+        type: "button",
+        label: "Cancel",
+        style: "secondary",
+        customId: await services.routes.issue({ guildId, actorId: interaction.user.id, action: "cancel" })
+      } }] }
+    ]
+  };
+}
+
+async function renderRosterRolePicker(
+  interaction: ComponentInteractionLike,
+  services: ApplicationServices,
+  teamId: string,
+  discordUserId: string,
+  context: LeagueContext
+): Promise<InteractionReplyOptions> {
+  const guildId = requiredGuildId(interaction);
+  const canManageTeam = context.actor.roles.includes("OWNER") || context.actor.roles.includes("ADMINISTRATOR");
+  const roles: TeamMembershipRole[] = canManageTeam ? ["PLAYER", "CAPTAIN", "MANAGER"] : ["PLAYER"];
+  return {
+    content: "**Choose roster role**\nSelect the role to assign. Team managers can add players to their own team but cannot grant leadership.",
+    ephemeral: true,
+    components: [
+      { components: [{ data: {
+        type: "select",
+        customId: await services.routes.issue({
+          guildId,
+          actorId: interaction.user.id,
+          action: "roster.assign.role",
+          entityId: teamId,
+          state: { discordUserId }
+        }),
+        options: roles.map((role) => ({ label: roleLabel(role), value: role, description: role === "PLAYER" ? "Standard roster member" : "Leadership roster role" }))
+      } }] },
+      { components: [{ data: {
+        type: "button",
+        label: "Cancel",
+        style: "secondary",
+        customId: await services.routes.issue({ guildId, actorId: interaction.user.id, action: "cancel" })
+      } }] }
+    ]
+  };
+}
+
 async function resolveContext(interaction: BaseInteractionLike, services: ApplicationServices) {
   return interaction.guildId ? services.leagues.resolveLeagueContext(interaction.guildId, interaction.user.id) : null;
 }
@@ -391,6 +517,32 @@ function requireEntity(route: ComponentRoute): asserts route is ComponentRoute &
   if (!route.entityId) {
     throw new DomainError("ACTION_EXPIRED", expiredControlMessage);
   }
+}
+
+function assignmentState(route: ComponentRoute): Readonly<{ discordUserId: string; role: TeamMembershipRole }> {
+  if (!isRecord(route.state) || !isTeamMembershipRole(route.state.role)) {
+    throw new DomainError("ACTION_EXPIRED", expiredControlMessage);
+  }
+  return { discordUserId: selectedDiscordUserId(route), role: route.state.role };
+}
+
+function selectedDiscordUserId(route: ComponentRoute): string {
+  if (!isRecord(route.state) || typeof route.state.discordUserId !== "string" || !route.state.discordUserId) {
+    throw new DomainError("ACTION_EXPIRED", expiredControlMessage);
+  }
+  return route.state.discordUserId;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isTeamMembershipRole(value: unknown): value is TeamMembershipRole {
+  return value === "PLAYER" || value === "CAPTAIN" || value === "MANAGER";
+}
+
+function roleLabel(role: TeamMembershipRole): string {
+  return role[0] + role.slice(1).toLocaleLowerCase();
 }
 
 function textField(interaction: ComponentInteractionLike, customId: string): string {

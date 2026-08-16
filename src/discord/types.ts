@@ -21,7 +21,7 @@ export type DiscordUserLike = Readonly<{
 
 export type ReplyComponent = Readonly<{
   data: Readonly<{
-    type: "button" | "select" | "user-select";
+    type: "button" | "select" | "user-select" | "role-select";
     label?: string;
     customId: string;
     style?: "primary" | "secondary" | "danger" | "success";
@@ -57,6 +57,8 @@ export type ComponentAction =
   | "team.detail"
   | "team.create"
   | "team.create.submit"
+  | "team.role.map"
+  | "team.role.select"
   | "registration.request"
   | "registration.submit"
   | "registration.withdraw"
@@ -69,6 +71,8 @@ export type ComponentAction =
   | "registration.decline.confirm"
   | "roster.assign"
   | "roster.assign.player"
+  | "roster.assign.role"
+  | "roster.assign.confirm"
   | "roster.membership.select"
   | "roster.release"
   | "roster.release.confirm";

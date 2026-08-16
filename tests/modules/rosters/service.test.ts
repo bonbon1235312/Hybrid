@@ -106,6 +106,7 @@ describe("RosterService", () => {
       const managedTeam = await fixture.teams.createTeam(fixture.owner, { name: "Northstar", rosterCap: 12 });
       const otherTeam = await fixture.teams.createTeam(fixture.owner, { name: "Southstar", rosterCap: 12 });
       const managerPlayerId = await approvePlayer(fixture, "manager-1");
+      const leadershipPlayerId = await approvePlayer(fixture, "leadership-player");
       const playerId = await approvePlayer(fixture, "player-1");
       await fixture.rosters.assignPlayerToTeam(
         fixture.owner,
@@ -113,6 +114,16 @@ describe("RosterService", () => {
       );
       const managerContext = await resolveContext(fixture.leagues, "guild-1", "manager-1");
 
+      for (const role of ["CAPTAIN", "MANAGER"] as const) {
+        await expect(fixture.rosters.assignPlayerToTeam(
+          managerContext,
+          { teamId: managedTeam.id, playerId: leadershipPlayerId, role }
+        )).rejects.toMatchObject({ code: "FORBIDDEN" });
+      }
+      await expect(fixture.rosters.assignPlayerToTeam(
+        managerContext,
+        { teamId: managedTeam.id, playerId: leadershipPlayerId, role: "PLAYER" }
+      )).resolves.toMatchObject({ role: "PLAYER" });
       await expect(fixture.rosters.assignPlayerToTeam(
         managerContext,
         { teamId: otherTeam.id, playerId, role: "PLAYER" }
@@ -153,9 +164,9 @@ async function createFixture() {
   const database = await createTestDatabase();
   const leagues = createLeagueService(database);
   const audit = createAuditRepository(database);
-  const teams = createTeamService(database, audit);
-  const registrations = createRegistrationService(database, audit);
   const jobs = createDiscordJobRepository(database);
+  const teams = createTeamService(database, audit, jobs);
+  const registrations = createRegistrationService(database, audit);
   const rosters = createRosterService(database, audit, jobs);
   const owner = await leagues.bootstrapLeague({
     discordGuildId: "guild-1",
