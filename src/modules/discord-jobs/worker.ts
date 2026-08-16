@@ -3,9 +3,9 @@ import type { AuditRepository } from "../audit/types.js";
 import type { DiscordJob, DiscordJobRepository } from "./repository.js";
 
 export type DiscordRoleGateway = Readonly<{
-  getMemberRoles(discordUserId: string): Promise<readonly string[]>;
-  setMemberRoles(discordUserId: string, roleIds: readonly string[]): Promise<void>;
-  roleExists(roleId: string): Promise<boolean>;
+  getMemberRoles(discordGuildId: string, discordUserId: string): Promise<readonly string[]>;
+  setMemberRoles(discordGuildId: string, discordUserId: string, roleIds: readonly string[]): Promise<void>;
+  roleExists(discordGuildId: string, roleId: string): Promise<boolean>;
 }>;
 
 export type RoleSyncWorkerOptions = Readonly<{
@@ -40,6 +40,7 @@ type MembershipRoleMapping = TeamRoleMapping & Readonly<{
 }>;
 
 type ReconciliationPlan = Readonly<{
+  discordGuildId: string;
   discordUserId: string;
   affected: TeamRoleMapping;
   desired: TeamRoleMapping | null;
@@ -116,7 +117,7 @@ async function reconcileJob(
   }
 
   const mappings = uniqueMappings([plan.affected, plan.desired]);
-  const missing = await missingRoleMappings(gateway, mappings);
+  const missing = await missingRoleMappings(gateway, plan.discordGuildId, mappings);
 
   if (missing.length > 0) {
     await markMappingsUnavailable(database, audit, job.leagueId, missing);
@@ -130,7 +131,7 @@ async function reconcileJob(
       throw error;
     }
 
-    const missingAfterError = await missingRoleMappings(gateway, mappings);
+    const missingAfterError = await missingRoleMappings(gateway, plan.discordGuildId, mappings);
 
     if (missingAfterError.length === 0) {
       throw error;
@@ -148,7 +149,7 @@ async function applyRoleReconciliation(
   plan: ReconciliationPlan,
   missing: readonly TeamRoleMapping[]
 ): Promise<void> {
-  const currentRoleIds = await gateway.getMemberRoles(plan.discordUserId);
+  const currentRoleIds = await gateway.getMemberRoles(plan.discordGuildId, plan.discordUserId);
   const nextRoleIds = reconcileRoleIds(
     currentRoleIds,
     withMissingMappingUnavailable(plan.affected, missing),
@@ -156,7 +157,7 @@ async function applyRoleReconciliation(
   );
 
   if (!sameRoleIds(currentRoleIds, nextRoleIds)) {
-    await gateway.setMemberRoles(plan.discordUserId, nextRoleIds);
+    await gateway.setMemberRoles(plan.discordGuildId, plan.discordUserId, nextRoleIds);
   }
 }
 
@@ -173,10 +174,11 @@ function withMissingMappingUnavailable(
 
 async function loadPlan(database: TransactionalDatabase, job: DiscordJob): Promise<ReconciliationPlan | null> {
   return database.transaction(async (transaction) => {
-    const affectedResult = await transaction.query<MembershipRoleMapping>(
+    const affectedResult = await transaction.query<MembershipRoleMapping & { discordGuildId: string }>(
       `SELECT
          team_memberships.league_member_id AS "leagueMemberId",
          discord_users.discord_user_id AS "discordUserId",
+         leagues.discord_guild_id AS "discordGuildId",
          teams.id AS "teamId",
          teams.discord_role_id AS "discordRoleId",
          teams.discord_role_state AS "discordRoleState"
@@ -184,6 +186,7 @@ async function loadPlan(database: TransactionalDatabase, job: DiscordJob): Promi
        JOIN league_members ON league_members.id = team_memberships.league_member_id
        JOIN discord_users ON discord_users.discord_user_id = league_members.discord_user_id
        JOIN teams ON teams.id = team_memberships.team_id AND teams.league_id = team_memberships.league_id
+       JOIN leagues ON leagues.id = team_memberships.league_id
        WHERE team_memberships.id = $1 AND team_memberships.league_id = $2`,
       [job.payload.membershipId, job.leagueId]
     );
@@ -209,12 +212,13 @@ async function loadPlan(database: TransactionalDatabase, job: DiscordJob): Promi
       [job.leagueId, affected.leagueMemberId]
     );
 
-    return { discordUserId: affected.discordUserId, affected, desired: desiredResult.rows[0] ?? null };
+    return { discordGuildId: affected.discordGuildId, discordUserId: affected.discordUserId, affected, desired: desiredResult.rows[0] ?? null };
   });
 }
 
 async function missingRoleMappings(
   gateway: DiscordRoleGateway,
+  discordGuildId: string,
   mappings: readonly TeamRoleMapping[]
 ): Promise<TeamRoleMapping[]> {
   const missing: TeamRoleMapping[] = [];
@@ -223,7 +227,7 @@ async function missingRoleMappings(
     if (!mapping.discordRoleId || mapping.discordRoleState !== "AVAILABLE") {
       continue;
     }
-    if (!await gateway.roleExists(mapping.discordRoleId)) {
+    if (!await gateway.roleExists(discordGuildId, mapping.discordRoleId)) {
       missing.push(mapping);
     }
   }

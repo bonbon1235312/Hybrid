@@ -13,6 +13,7 @@ import {
 } from "discord.js";
 
 import { handleInteraction } from "./router.js";
+import type { DiscordRoleGateway } from "../modules/discord-jobs/worker.js";
 import type {
   ApplicationServices,
   BaseInteractionLike,
@@ -33,6 +34,37 @@ export function createDiscordClient(services: ApplicationServices): Client {
     }
   });
   return client;
+}
+
+/** Discord.js implementation of the tenant-aware role reconciliation port. */
+export function createDiscordRoleGateway(client: Client): DiscordRoleGateway {
+  return {
+    getMemberRoles: async (discordGuildId, discordUserId) => {
+      const guild = await client.guilds.fetch(discordGuildId);
+      const member = await guild.members.fetch(discordUserId);
+      return [...member.roles.cache.keys()].filter((roleId) => roleId !== guild.id);
+    },
+    setMemberRoles: async (discordGuildId, discordUserId, roleIds) => {
+      const guild = await client.guilds.fetch(discordGuildId);
+      const member = await guild.members.fetch(discordUserId);
+      await member.roles.set([...roleIds]);
+    },
+    roleExists: async (discordGuildId, roleId) => {
+      const guild = await client.guilds.fetch(discordGuildId);
+      try {
+        return Boolean(await guild.roles.fetch(roleId));
+      } catch (error) {
+        if (isUnknownRole(error)) {
+          return false;
+        }
+        throw error;
+      }
+    }
+  };
+}
+
+function isUnknownRole(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && String(error.code) === "10011";
 }
 
 function adaptInteraction(interaction: Interaction): InteractionLike | null {

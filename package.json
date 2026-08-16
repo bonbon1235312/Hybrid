@@ -7,10 +7,12 @@
     "node": ">=24.14.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-migrations.mjs",
+    "commands:register": "tsx src/discord/register-commands.ts",
     "db:generate": "drizzle-kit generate",
     "dev": "tsx watch src/main.ts",
     "lint": "eslint . --max-warnings=0",
+    "migrate": "tsx src/platform/migrate.ts",
     "start": "node dist/main.js",
     "test": "vitest run",
     "test:watch": "vitest",

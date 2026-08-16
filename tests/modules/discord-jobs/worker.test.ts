@@ -285,11 +285,11 @@ class FakeDiscordRoleGateway implements DiscordRoleGateway {
     this.existingRoles = new Set(existingRoles);
   }
 
-  async getMemberRoles(discordUserId: string): Promise<readonly string[]> {
+  async getMemberRoles(_discordGuildId: string, discordUserId: string): Promise<readonly string[]> {
     return this.roles.get(discordUserId) ?? [];
   }
 
-  async setMemberRoles(discordUserId: string, roleIds: readonly string[]): Promise<void> {
+  async setMemberRoles(_discordGuildId: string, discordUserId: string, roleIds: readonly string[]): Promise<void> {
     if (this.setFailure) {
       const failure = this.setFailure;
       if (this.removeRoleOnSetFailure) {
@@ -302,7 +302,7 @@ class FakeDiscordRoleGateway implements DiscordRoleGateway {
     this.setCalls.push({ discordUserId, roleIds: [...roleIds] });
   }
 
-  async roleExists(roleId: string): Promise<boolean> {
+  async roleExists(_discordGuildId: string, roleId: string): Promise<boolean> {
     return this.existingRoles.has(roleId);
   }
 }
