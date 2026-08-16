@@ -124,3 +124,15 @@ export const discordJobs = pgTable("discord_jobs", {
   createdAt,
   updatedAt
 });
+
+export const interactionRoutes = pgTable("interaction_routes", {
+  nonce: text("nonce").primaryKey(),
+  discordGuildId: text("discord_guild_id").notNull(),
+  actorDiscordUserId: text("actor_discord_user_id").notNull(),
+  action: text("action").notNull(),
+  entityId: text("entity_id"),
+  state: jsonb("state"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt
+});

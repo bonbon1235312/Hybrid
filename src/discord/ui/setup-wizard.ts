@@ -1,9 +1,12 @@
-import { encodeComponentId } from "./ids.js";
-import type { ModalOptions } from "../types.js";
+import type { ComponentRouteIssuer, ModalOptions } from "../types.js";
 
-export function renderSetupWizard(actorId: string): ModalOptions {
+export async function renderSetupWizard(input: Readonly<{
+  actorId: string;
+  guildId: string;
+  routes: ComponentRouteIssuer;
+}>): Promise<ModalOptions> {
   return {
-    customId: encodeComponentId({ action: "setup.submit", actorId }),
+    customId: await input.routes.issue({ guildId: input.guildId, action: "setup.submit", actorId: input.actorId }),
     title: "Set up Hybrid League",
     inputs: [
       { customId: "league-name", label: "League name", required: true, placeholder: "Hybrid League" },

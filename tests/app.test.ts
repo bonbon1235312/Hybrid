@@ -49,7 +49,8 @@ class DeferredWorker implements RoleSyncWorker {
 
 const noOpGateway: DiscordRoleGateway = {
   getMemberRoles: async () => [],
-  setMemberRoles: async () => undefined,
+  addMemberRole: async () => undefined,
+  removeMemberRole: async () => undefined,
   roleExists: async () => false
 };
 

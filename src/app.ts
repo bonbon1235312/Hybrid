@@ -10,8 +10,8 @@ import { createRegistrationService } from "./modules/registrations/service.js";
 import { createRosterService } from "./modules/rosters/service.js";
 import { createTeamService } from "./modules/teams/service.js";
 import { createDiscordClient, createDiscordRoleGateway } from "./discord/client.js";
-import { configureRouteStore } from "./discord/ui/route-store.js";
 import type { ApplicationServices } from "./discord/types.js";
+import { createRouteStore } from "./discord/ui/route-store.js";
 import type { AppConfig } from "./platform/config.js";
 import type { TransactionalDatabase } from "./platform/database.js";
 import { createLogger } from "./platform/logger.js";
@@ -53,9 +53,9 @@ export async function createHybridApplication(dependencies: HybridApplicationDep
   if (database.migrate) {
     await database.migrate();
   }
-  configureRouteStore(database);
 
   const logger = createLogger(config?.logLevel ?? "info");
+  const routes = createRouteStore(database, config?.componentSigningKey ?? requiredComponentSigningKey());
   const audit = createAuditRepository(database);
   const jobs = createDiscordJobRepository(database);
   const services: ApplicationServices = {
@@ -63,6 +63,7 @@ export async function createHybridApplication(dependencies: HybridApplicationDep
     teams: createTeamService(database, audit),
     registrations: createRegistrationService(database, audit),
     rosters: createRosterService(database, audit, jobs),
+    routes,
     logger
   };
   const client = dependencies.discordClient ?? createDiscordClient(services);
@@ -125,6 +126,14 @@ export async function createHybridApplication(dependencies: HybridApplicationDep
       }
     });
   }
+}
+
+function requiredComponentSigningKey(): string {
+  const signingKey = process.env.HYBRID_COMPONENT_SIGNING_KEY;
+  if (!signingKey) {
+    throw new Error("HYBRID_COMPONENT_SIGNING_KEY is required when no AppConfig is supplied.");
+  }
+  return signingKey;
 }
 
 function createProductionDatabase(config: AppConfig | undefined): ClosableDatabase {

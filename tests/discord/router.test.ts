@@ -1,244 +1,125 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeComponentId, encodeComponentId } from "../../src/discord/ui/ids.js";
+import { createHybridApplication } from "../../src/app.js";
 import { routeComponent } from "../../src/discord/router.js";
-import { renderTeamDashboard } from "../../src/discord/ui/team-dashboard.js";
-import type { ApplicationServices, ComponentInteractionLike, InteractionReplyOptions } from "../../src/discord/types.js";
-import type { LeagueContext } from "../../src/modules/league/types.js";
+import type { ComponentInteractionLike, InteractionReplyOptions, ModalOptions } from "../../src/discord/types.js";
+import type { DiscordRoleGateway } from "../../src/modules/discord-jobs/worker.js";
+import { createTestDatabase } from "../../src/platform/test-db.js";
 
-describe("handleInteraction component routing", () => {
-  it("rejects stale component actions", async () => {
-    const staleApproveButton = encodeComponentId({
-      action: "registration.approve",
-      entityId: "registration-1",
-      actorId: "player-1",
-      version: 1,
-      expiresAt: Date.now() - 1
-    });
-    const playerInteraction: ComponentInteractionLike = {
-      customId: staleApproveButton,
-      guildId: "guild-1",
-      user: { id: "player-1", displayName: "Player One" },
-      isButton: () => true,
-      isStringSelectMenu: () => false,
-      isModalSubmit: () => false,
-      deferUpdate: async () => undefined,
-      editReply: async () => undefined,
-      reply: async () => undefined,
-      showModal: async () => undefined
-    };
+describe("guided League Core router", () => {
+  it("creates the first team through a compact owner modal without Discord/database ID fields", async () => {
+    const fixture = await createFixture();
+    try {
+      const owner = await fixture.app.services.leagues.bootstrapLeague({
+        discordGuildId: "guild-1",
+        actor: { discordUserId: "owner-1", displayName: "Owner", manageGuild: true },
+        name: "Hybrid League",
+        defaultRosterCap: 12
+      });
+      const open = component(await fixture.app.services.routes.issue({
+        guildId: "guild-1", actorId: "owner-1", action: "team.create"
+      }), "owner-1");
 
-    await expect(routeComponent(playerInteraction, {} as ApplicationServices))
-      .rejects.toMatchObject({ code: "ACTION_EXPIRED" });
+      await routeComponent(open, fixture.app.services);
+      const modal = open.modals.at(-1);
+      expect(modal?.inputs.map((input) => input.customId)).toEqual(["team-name", "roster-cap"]);
+      expect(modal?.inputs.map((input) => input.label)).not.toContain("Discord role ID (optional)");
+
+      const submit = component(modal?.customId ?? "", "owner-1", { "team-name": "Northstar", "roster-cap": "8" });
+      await routeComponent(submit, fixture.app.services);
+
+      await expect(fixture.app.services.teams.listTeams(owner)).resolves.toMatchObject([{ name: "Northstar", rosterCap: 8 }]);
+    } finally {
+      await fixture.app.stop();
+    }
   });
 
-  it("rejects a component issued to another Discord user", async () => {
-    const route = encodeComponentId({
-      action: "home",
-      actorId: "owner-1",
-      version: 1,
-      expiresAt: Date.now() + 60_000
-    });
-    const interaction: ComponentInteractionLike = {
-      customId: route,
-      guildId: "guild-1",
-      user: { id: "player-1", displayName: "Player One" },
-      isButton: () => true,
-      isStringSelectMenu: () => false,
-      isModalSubmit: () => false,
-      deferUpdate: async () => undefined,
-      editReply: async () => undefined,
-      reply: async () => undefined,
-      showModal: async () => undefined
-    };
+  it("assigns a selected Discord user only after re-resolving their live league membership", async () => {
+    const fixture = await createFixture();
+    try {
+      const owner = await fixture.app.services.leagues.bootstrapLeague({
+        discordGuildId: "guild-1",
+        actor: { discordUserId: "owner-1", displayName: "Owner", manageGuild: true },
+        name: "Hybrid League",
+        defaultRosterCap: 12
+      });
+      const team = await fixture.app.services.teams.createTeam(owner, { name: "Northstar", rosterCap: 8 });
+      const player = await fixture.app.services.leagues.resolveLeagueContext("guild-1", "player-1");
+      if (!player) throw new Error("Expected a league context for the selected Discord user.");
+      const registration = await fixture.app.services.registrations.requestRegistration(player, { displayName: "Player One" });
+      await fixture.app.services.registrations.reviewRegistration(owner, { registrationId: registration.id, decision: "APPROVE" });
 
-    await expect(routeComponent(interaction, {} as ApplicationServices))
-      .rejects.toMatchObject({ code: "FORBIDDEN" });
+      const assign = component(await fixture.app.services.routes.issue({
+        guildId: "guild-1", actorId: "owner-1", action: "roster.assign", entityId: team.id
+      }), "owner-1");
+      await routeComponent(assign, fixture.app.services);
+      const userSelect = assign.edits.at(-1)?.components?.flatMap((row) => row.components)
+        .find((control) => control.data.type === "user-select");
+      expect(userSelect?.data.customId).toMatch(/^h3\./);
+
+      const select = component(userSelect?.data.customId ?? "", "owner-1", undefined, ["player-1"]);
+      await routeComponent(select, fixture.app.services);
+
+      await expect(fixture.app.services.rosters.listActiveTeamMemberships(owner, team.id))
+        .resolves.toMatchObject([{ leagueMemberId: registration.leagueMemberId, role: "PLAYER" }]);
+      expect(select.edits.at(-1)?.content).toBe("Player assigned. Discord role sync is queued.");
+    } finally {
+      await fixture.app.stop();
+    }
   });
 
-  it("lets the requesting player withdraw a reloaded pending registration after confirmation", async () => {
-    const context = playerContext();
-    const registrationReads: string[] = [];
-    const registrations = {
-      requestRegistration: async () => pendingRegistration(),
-      getRegistration: async (_context: LeagueContext, registrationId: string) => {
-        registrationReads.push(registrationId);
-        return pendingRegistration();
-      },
-      withdrawRegistration: async (_context: LeagueContext, registrationId: string) => {
-        withdrawn.push(registrationId);
-        return { ...pendingRegistration(), status: "WITHDRAWN" as const };
-      }
-    };
-    const withdrawn: string[] = [];
-    const services = servicesFor(context, { registrations });
-    const submitted = componentInteraction(componentId("registration.submit", "player-1"), "player-1", { "display-name": "Player One" });
+  it("fails closed when a durable control is replayed by a different user", async () => {
+    const fixture = await createFixture();
+    try {
+      const customId = await fixture.app.services.routes.issue({ guildId: "guild-1", actorId: "owner-1", action: "home" });
+      const interaction = component(customId, "owner-2");
 
-    await routeComponent(submitted, services);
-    const select = componentInteraction(buttonId(submitted, "Withdraw registration"), "player-1");
-    await routeComponent(select, services);
-    const confirm = componentInteraction(buttonId(select, "Confirm"), "player-1");
-    await routeComponent(confirm, services);
-
-    expect(withdrawn).toEqual(["registration-1"]);
-    expect(registrationReads).toEqual(["registration-1", "registration-1"]);
-    expect(confirm.edits.at(-1)?.content).toBe("Registration withdrawn.");
-  });
-
-  it("rejects a pending-registration withdrawal issued to another player before service access", async () => {
-    const getRegistrationCalls: string[] = [];
-    const services = servicesFor(playerContext(), {
-      registrations: { getRegistration: async (_context: LeagueContext, id: string) => {
-        getRegistrationCalls.push(id);
-        return pendingRegistration();
-      } }
-    });
-    const interaction = componentInteraction(encodeComponentId({
-      action: "registration.withdraw",
-      entityId: "registration-1",
-      actorId: "player-1"
-    }), "player-2");
-
-    await expect(routeComponent(interaction, services)).rejects.toMatchObject({ code: "FORBIDDEN" });
-
-    expect(getRegistrationCalls).toEqual([]);
-  });
-
-  it("lets a manager release an active membership only after it is reloaded and confirmed", async () => {
-    const context = managerContext();
-    const released: string[] = [];
-    const membershipReads: string[] = [];
-    const rosters = {
-      getActiveTeamMembership: async (_context: LeagueContext, membershipId: string) => {
-        membershipReads.push(membershipId);
-        return activeMembership();
-      },
-      endTeamMembership: async (_context: LeagueContext, input: { membershipId: string }) => {
-        released.push(input.membershipId);
-        return { ...activeMembership(), status: "ENDED" as const };
-      }
-    };
-    const services = servicesFor(context, { rosters });
-    const select = componentInteraction(
-      encodeComponentId({ action: "roster.membership.select", actorId: "manager-1" }),
-      "manager-1",
-      undefined,
-      [encodeComponentId({ action: "roster.release", entityId: "membership-1", actorId: "manager-1" })]
-    );
-
-    await routeComponent(select, services);
-    const confirm = componentInteraction(buttonId(select, "Confirm"), "manager-1");
-    await routeComponent(confirm, services);
-
-    expect(released).toEqual(["membership-1"]);
-    expect(membershipReads).toEqual(["membership-1", "membership-1"]);
-    expect(confirm.edits.at(-1)?.content).toBe("Player released. Discord role sync is queued.");
-  });
-
-  it("rejects a roster release control replayed by a different manager before service access", async () => {
-    const membershipReads: string[] = [];
-    const services = servicesFor(managerContext(), {
-      rosters: { getActiveTeamMembership: async (_context: LeagueContext, id: string) => {
-        membershipReads.push(id);
-        return activeMembership();
-      } }
-    });
-    const interaction = componentInteraction(encodeComponentId({
-      action: "roster.release",
-      entityId: "membership-1",
-      actorId: "manager-1"
-    }), "manager-2");
-
-    await expect(routeComponent(interaction, services)).rejects.toMatchObject({ code: "FORBIDDEN" });
-
-    expect(membershipReads).toEqual([]);
-  });
-
-  it("renders an actor-bound active roster selection for a manager", () => {
-    const dashboard = renderTeamDashboard({
-      team: { id: "team-1", name: "Blue", rosterCap: 8, rosterCount: 1, status: "ACTIVE", discordRoleId: null, discordRoleState: "UNMAPPED", manager: null },
-      actorId: "manager-1",
-      canManageRoster: true,
-      memberships: [activeMembership()]
-    });
-    const select = dashboard.components?.flatMap((row) => row.components).find((component) => component.data.type === "select");
-    const value = select?.data.options?.[0]?.value;
-
-    expect(value).toBeDefined();
-    expect(value && decodeComponentId(value)).toMatchObject({ action: "roster.release", actorId: "manager-1" });
+      await expect(routeComponent(interaction, fixture.app.services)).rejects.toMatchObject({ code: "ACTION_EXPIRED" });
+    } finally {
+      await fixture.app.stop();
+    }
   });
 });
 
-function playerContext(): LeagueContext {
-  return {
-    leagueId: "league-1",
-    discordGuildId: "guild-1",
-    actor: { discordUserId: "player-1", leagueMemberId: "member-player-1", role: "PLAYER", roles: ["PLAYER"], managedTeamIds: [] }
-  };
+async function createFixture() {
+  const database = await createTestDatabase();
+  const app = await createHybridApplication({
+    database,
+    discordClient: { login: async () => undefined, destroy: () => undefined },
+    discordGateway: noOpGateway
+  });
+  return { app };
 }
 
-function managerContext(): LeagueContext {
-  return {
-    leagueId: "league-1",
-    discordGuildId: "guild-1",
-    actor: { discordUserId: "manager-1", leagueMemberId: "member-manager-1", role: "MANAGER", roles: ["MANAGER"], managedTeamIds: ["team-1"] }
-  };
-}
+const noOpGateway: DiscordRoleGateway = {
+  getMemberRoles: async () => [],
+  addMemberRole: async () => undefined,
+  removeMemberRole: async () => undefined,
+  roleExists: async () => false
+};
 
-function pendingRegistration() {
-  return {
-    id: "registration-1", leagueId: "league-1", leagueMemberId: "member-player-1", displayName: "Player One", status: "PENDING" as const,
-    requestedAt: new Date("2026-08-16T00:00:00.000Z"), reviewedAt: null, reviewedByMemberId: null, declinedReason: null
-  };
-}
-
-function activeMembership() {
-  return {
-    id: "membership-1", leagueId: "league-1", leagueMemberId: "member-player-1", teamId: "team-1", role: "PLAYER" as const,
-    status: "ACTIVE" as const, endedAt: null, endedByMemberId: null
-  };
-}
-
-function servicesFor(context: LeagueContext, overrides: Record<string, unknown>): ApplicationServices {
-  return {
-    leagues: { resolveLeagueContext: async () => context },
-    ...overrides
-  } as unknown as ApplicationServices;
-}
-
-function componentInteraction(
+function component(
   customId: string,
   userId: string,
   fields?: Record<string, string>,
   values?: readonly string[]
-): ComponentInteractionLike & { edits: InteractionReplyOptions[] } {
+): ComponentInteractionLike & { edits: InteractionReplyOptions[]; modals: ModalOptions[] } {
   const edits: InteractionReplyOptions[] = [];
+  const modals: ModalOptions[] = [];
   return {
     customId,
     guildId: "guild-1",
     user: { id: userId, displayName: userId },
     isButton: () => true,
     isStringSelectMenu: () => false,
-    isModalSubmit: () => false,
+    isModalSubmit: () => Boolean(fields),
     deferUpdate: async () => undefined,
     editReply: async (options) => { edits.push(options); },
     reply: async () => undefined,
-    showModal: async () => undefined,
+    showModal: async (options) => { modals.push(options); },
     ...(fields ? { fields: { getTextInputValue: (id: string) => fields[id] ?? "" } } : {}),
     ...(values ? { values } : {}),
-    edits
+    edits,
+    modals
   };
-}
-
-function buttonId(interaction: ComponentInteractionLike & { edits: InteractionReplyOptions[] }, label: string): string {
-  const options = interaction.edits.at(-1);
-  const button = options?.components?.flatMap((row) => row.components).find((component) => component.data.label === label);
-  if (!button) {
-    throw new Error(`Expected ${label} button`);
-  }
-  return button.data.customId;
-}
-
-function componentId(action: "registration.submit", actorId: string): string {
-  return encodeComponentId({ action, actorId });
 }

@@ -1,21 +1,21 @@
-import { encodeComponentId } from "./ids.js";
-import type { ComponentAction, InteractionReplyOptions } from "../types.js";
+import type { ComponentAction, ComponentRouteIssuer, InteractionReplyOptions } from "../types.js";
 
-export function renderConfirmation(input: Readonly<{
+export async function renderConfirmation(input: Readonly<{
   actorId: string;
+  guildId: string;
+  routes: ComponentRouteIssuer;
   action: ComponentAction;
   entityId: string;
   title: string;
   detail: string;
-  customId?: string;
-}>): InteractionReplyOptions {
+}>): Promise<InteractionReplyOptions> {
   return {
     content: `**${input.title}**\n${input.detail}`,
     ephemeral: true,
     components: [{
       components: [
-        { data: { type: "button", label: "Confirm", style: "danger", customId: input.customId ?? encodeComponentId({ action: input.action, entityId: input.entityId, actorId: input.actorId }) } },
-        { data: { type: "button", label: "Cancel", style: "secondary", customId: encodeComponentId({ action: "cancel", actorId: input.actorId }) } }
+        { data: { type: "button", label: "Confirm", style: "danger", customId: await input.routes.issue({ guildId: input.guildId, action: input.action, entityId: input.entityId, actorId: input.actorId }) } },
+        { data: { type: "button", label: "Cancel", style: "secondary", customId: await input.routes.issue({ guildId: input.guildId, action: "cancel", actorId: input.actorId }) } }
       ]
     }]
   };

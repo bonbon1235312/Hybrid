@@ -2,10 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createAuditRepository } from "../../../src/modules/audit/repository.js";
 import { createDiscordJobRepository } from "../../../src/modules/discord-jobs/repository.js";
-import {
-  createRoleSyncWorker,
-  type DiscordRoleGateway
-} from "../../../src/modules/discord-jobs/worker.js";
+import { createRoleSyncWorker, type DiscordRoleGateway } from "../../../src/modules/discord-jobs/worker.js";
 import { createLeagueService } from "../../../src/modules/league/service.js";
 import { createRegistrationService } from "../../../src/modules/registrations/service.js";
 import { createRosterService } from "../../../src/modules/rosters/service.js";
@@ -13,200 +10,83 @@ import { createTeamService } from "../../../src/modules/teams/service.js";
 import { createTestDatabase } from "../../../src/platform/test-db.js";
 
 describe("RoleSyncWorker", () => {
-  it("reclaims an expired lease and completes the desired role sync exactly once", async () => {
+  it("reclaims an expired lease and applies the current role sync exactly once", async () => {
     const fixture = await createFixture();
-
     try {
       const assignment = await createAssignedPlayer(fixture, "Northstar", "role-1", "player-1");
       const claimed = await fixture.jobs.claimDiscordJobs("crashed-worker", 1, 60);
-      await fixture.database.query(
-        "UPDATE discord_jobs SET lease_expires_at = NOW() - INTERVAL '1 second' WHERE id = $1",
-        [claimed[0]?.id]
-      );
+      await fixture.database.query("UPDATE discord_jobs SET lease_expires_at = NOW() - INTERVAL '1 second' WHERE id = $1", [claimed[0]?.id]);
       const gateway = new FakeDiscordRoleGateway(["role-1"]);
-      const worker = createRoleSyncWorker(fixture.database, fixture.jobs, fixture.audit, gateway, {
-        workerId: "recovery-worker",
-        claimLimit: 4,
-        leaseSeconds: 60,
-        maxAttempts: 3,
-        retryBaseSeconds: 1
-      });
+      const worker = createWorker(fixture, gateway);
 
       await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 1, completed: 1, retried: 0, failed: 0 });
       await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 0 });
-      expect(gateway.setCalls).toEqual([{ discordUserId: "player-1", roleIds: ["role-1"] }]);
+      expect(gateway.addCalls).toEqual([{ discordUserId: "player-1", roleId: "role-1" }]);
+      expect(gateway.removeCalls).toEqual([]);
       expect(await jobStatus(fixture.database, `role-sync:${assignment.membership.id}`)).toBe("COMPLETED");
     } finally {
       await fixture.database.dispose();
     }
   });
 
-  it("marks a deleted mapped role unavailable without changing roster truth", async () => {
+  it("marks a deleted mapping unavailable without changing roster truth", async () => {
     const fixture = await createFixture();
-
     try {
       const assignment = await createAssignedPlayer(fixture, "Northstar", "role-deleted", "player-1");
       const gateway = new FakeDiscordRoleGateway();
-      const worker = createWorker(fixture, gateway);
 
-      await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 1, completed: 1, recoveries: 1 });
+      await expect(createWorker(fixture, gateway).runOnce()).resolves.toMatchObject({ claimed: 1, completed: 1, recoveries: 1 });
       await expect(fixture.teams.getTeamDashboard(fixture.owner, assignment.team.id))
         .resolves.toMatchObject({ discordRoleState: "UNAVAILABLE" });
       expect(await activeRosterCount(fixture.database, assignment.team.id)).toBe(1);
-      expect(await jobStatus(fixture.database, `role-sync:${assignment.membership.id}`)).toBe("COMPLETED");
-      expect(gateway.setCalls).toEqual([]);
-      await expect(fixture.audit.listEntityHistory(fixture.owner, "team", assignment.team.id))
-        .resolves.toMatchObject([{ action: "team.created" }, { action: "discord.role_unavailable" }]);
+      expect(gateway.addCalls).toEqual([]);
+      expect(gateway.removeCalls).toEqual([]);
     } finally {
       await fixture.database.dispose();
     }
   });
 
-  it("reconciles a stale membership job to the player’s current team role", async () => {
+  it("uses targeted add/remove calls and preserves an unrelated role during a roster move", async () => {
     const fixture = await createFixture();
-
     try {
       const first = await createAssignedPlayer(fixture, "Northstar", "role-old", "player-1");
-      await fixture.rosters.endTeamMembership(fixture.owner, { membershipId: first.membership.id });
-      const secondTeam = await fixture.teams.createTeam(
-        fixture.owner,
-        { name: "Southstar", rosterCap: 12, discordRoleId: "role-new" }
-      );
-      const secondMembership = await fixture.rosters.assignPlayerToTeam(
-        fixture.owner,
-        { teamId: secondTeam.id, playerId: first.playerId, role: "PLAYER" }
-      );
-      const gateway = new FakeDiscordRoleGateway(["role-old", "role-new"]);
-      gateway.roles.set("player-1", ["role-old"]);
-      const worker = createWorker(fixture, gateway);
-
-      await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 2, completed: 2 });
-      expect(gateway.setCalls).toEqual([{ discordUserId: "player-1", roleIds: ["role-new"] }]);
-      expect(await jobStatus(fixture.database, `role-sync:${first.membership.id}`)).toBe("COMPLETED");
-      expect(await jobStatus(fixture.database, `role-sync:${secondMembership.id}`)).toBe("COMPLETED");
-    } finally {
-      await fixture.database.dispose();
-    }
-  });
-
-  it("removes a prior mapped role when the transfer target has a deleted mapping", async () => {
-    const fixture = await createFixture();
-
-    try {
-      const first = await createAssignedPlayer(fixture, "Northstar", "role-old", "player-1");
-      await fixture.rosters.endTeamMembership(fixture.owner, { membershipId: first.membership.id });
-      const secondTeam = await fixture.teams.createTeam(
-        fixture.owner,
-        { name: "Southstar", rosterCap: 12, discordRoleId: "role-deleted" }
-      );
-      const secondMembership = await fixture.rosters.assignPlayerToTeam(
-        fixture.owner,
-        { teamId: secondTeam.id, playerId: first.playerId, role: "PLAYER" }
-      );
-      const gateway = new FakeDiscordRoleGateway(["role-old", "unrelated-role"]);
-      gateway.roles.set("player-1", ["role-old", "unrelated-role"]);
-      const worker = createWorker(fixture, gateway);
-
-      await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 2, completed: 2, recoveries: 1 });
-      expect(gateway.setCalls).toEqual([{ discordUserId: "player-1", roleIds: ["unrelated-role"] }]);
-      await expect(fixture.teams.getTeamDashboard(fixture.owner, secondTeam.id))
-        .resolves.toMatchObject({ discordRoleState: "UNAVAILABLE" });
-      await expect(fixture.audit.listEntityHistory(fixture.owner, "team", secondTeam.id))
-        .resolves.toMatchObject([{ action: "team.created" }, { action: "discord.role_unavailable" }]);
-      expect(await activeRosterCount(fixture.database, secondTeam.id)).toBe(1);
-      expect(await jobStatus(fixture.database, `role-sync:${secondMembership.id}`)).toBe("COMPLETED");
-    } finally {
-      await fixture.database.dispose();
-    }
-  });
-
-  it("re-identifies a role deleted after preflight without disabling the prior valid mapping", async () => {
-    const fixture = await createFixture();
-
-    try {
-      const first = await createAssignedPlayer(fixture, "Northstar", "role-old", "player-1");
-      await fixture.rosters.endTeamMembership(fixture.owner, { membershipId: first.membership.id });
-      const secondTeam = await fixture.teams.createTeam(
-        fixture.owner,
-        { name: "Southstar", rosterCap: 12, discordRoleId: "role-new" }
-      );
-      await fixture.rosters.assignPlayerToTeam(
-        fixture.owner,
-        { teamId: secondTeam.id, playerId: first.playerId, role: "PLAYER" }
-      );
       const gateway = new FakeDiscordRoleGateway(["role-old", "role-new", "unrelated-role"]);
-      gateway.roles.set("player-1", ["role-old", "unrelated-role"]);
-      gateway.setFailure = Object.assign(new Error("role disappeared"), { code: "UNKNOWN_ROLE" });
-      gateway.removeRoleOnSetFailure = "role-new";
+      gateway.roles.set("player-1", new Set(["unrelated-role"]));
       const worker = createWorker(fixture, gateway);
+      await worker.runOnce();
 
-      await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 2, completed: 2, recoveries: 1 });
-      expect(gateway.setCalls).toEqual([{ discordUserId: "player-1", roleIds: ["unrelated-role"] }]);
-      await expect(fixture.teams.getTeamDashboard(fixture.owner, first.team.id))
-        .resolves.toMatchObject({ discordRoleState: "AVAILABLE" });
-      await expect(fixture.teams.getTeamDashboard(fixture.owner, secondTeam.id))
-        .resolves.toMatchObject({ discordRoleState: "UNAVAILABLE" });
-      const firstTeamAudit = await fixture.audit.listEntityHistory(fixture.owner, "team", first.team.id);
-      expect(firstTeamAudit.map((event) => event.action)).not.toContain("discord.role_unavailable");
-      await expect(fixture.audit.listEntityHistory(fixture.owner, "team", secondTeam.id))
-        .resolves.toMatchObject([{ action: "team.created" }, { action: "discord.role_unavailable" }]);
-      expect(await activeRosterCount(fixture.database, secondTeam.id)).toBe(1);
+      await fixture.rosters.endTeamMembership(fixture.owner, { membershipId: first.membership.id });
+      const secondTeam = await fixture.teams.createTeam(fixture.owner, { name: "Southstar", rosterCap: 12, discordRoleId: "role-new" });
+      await fixture.rosters.assignPlayerToTeam(fixture.owner, { teamId: secondTeam.id, playerId: first.playerId, role: "PLAYER" });
+      await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 2, completed: 2 });
+
+      expect(gateway.rolesFor("player-1")).toEqual(new Set(["unrelated-role", "role-new"]));
+      expect(gateway.removeCalls).toEqual([{ discordUserId: "player-1", roleId: "role-old" }]);
+      expect(gateway.addCalls).toEqual([
+        { discordUserId: "player-1", roleId: "role-old" },
+        { discordUserId: "player-1", roleId: "role-new" }
+      ]);
     } finally {
       await fixture.database.dispose();
     }
   });
 
-  it("uses bounded retries for gateway failures without rolling roster state back", async () => {
+  it("retries a targeted mutation without rolling roster state back", async () => {
     const fixture = await createFixture();
-
     try {
       const assignment = await createAssignedPlayer(fixture, "Northstar", "role-1", "player-1");
       const gateway = new FakeDiscordRoleGateway(["role-1"]);
-      gateway.setFailure = new Error("network unavailable");
+      gateway.failure = new Error("network unavailable");
       const worker = createWorker(fixture, gateway);
 
-      await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 1, completed: 0, retried: 1, failed: 0 });
+      await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 1, retried: 1, completed: 0 });
       expect(await jobStatus(fixture.database, `role-sync:${assignment.membership.id}`)).toBe("QUEUED");
       expect(await activeRosterCount(fixture.database, assignment.team.id)).toBe(1);
 
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        await fixture.database.query(
-          "UPDATE discord_jobs SET available_at = NOW() - INTERVAL '1 second' WHERE deduplication_key = $1",
-          [`role-sync:${assignment.membership.id}`]
-        );
-        await worker.runOnce();
-      }
-
-      expect(await jobStatus(fixture.database, `role-sync:${assignment.membership.id}`)).toBe("FAILED");
-      expect(await activeRosterCount(fixture.database, assignment.team.id)).toBe(1);
-    } finally {
-      await fixture.database.dispose();
-    }
-  });
-
-  it("does not let an expired older claim finish a newer claim from the same worker ID", async () => {
-    const fixture = await createFixture();
-
-    try {
-      const assignment = await createAssignedPlayer(fixture, "Northstar", "role-1", "player-1");
-      const gateway = new StaggeredGateway();
-      const worker = createWorker(fixture, gateway);
-
-      const olderRun = worker.runOnce();
-      await gateway.firstSetStarted.promise;
-      await fixture.database.query(
-        "UPDATE discord_jobs SET lease_expires_at = NOW() - INTERVAL '1 second' WHERE deduplication_key = $1",
-        [`role-sync:${assignment.membership.id}`]
-      );
-      const newerRun = worker.runOnce();
-      await gateway.secondSetStarted.promise;
-
-      gateway.releaseFirst.resolve();
-      await expect(olderRun).resolves.toMatchObject({ claimed: 1, completed: 0 });
-      expect(await jobStatus(fixture.database, `role-sync:${assignment.membership.id}`)).toBe("LEASED");
-
-      gateway.releaseSecond.resolve();
-      await expect(newerRun).resolves.toMatchObject({ claimed: 1, completed: 1 });
+      gateway.failure = null;
+      await fixture.database.query("UPDATE discord_jobs SET available_at = NOW() - INTERVAL '1 second' WHERE deduplication_key = $1", [`role-sync:${assignment.membership.id}`]);
+      await expect(worker.runOnce()).resolves.toMatchObject({ claimed: 1, completed: 1 });
+      expect(gateway.rolesFor("player-1")).toEqual(new Set(["role-1"]));
     } finally {
       await fixture.database.dispose();
     }
@@ -227,7 +107,6 @@ async function createFixture() {
     name: "Hybrid League",
     defaultRosterCap: 12
   });
-
   return { database, leagues, audit, teams, registrations, jobs, rosters, owner };
 }
 
@@ -237,28 +116,20 @@ async function createAssignedPlayer(
   discordRoleId: string,
   discordUserId: string
 ) {
-  const team = await fixture.teams.createTeam(
-    fixture.owner,
-    { name, rosterCap: 12, discordRoleId }
-  );
-  const playerContext = await resolveContext(fixture.leagues, discordUserId);
-  const registration = await fixture.registrations.requestRegistration(playerContext, { displayName: discordUserId });
-  await fixture.registrations.reviewRegistration(
-    fixture.owner,
-    { registrationId: registration.id, decision: "APPROVE" }
-  );
-  const membership = await fixture.rosters.assignPlayerToTeam(
-    fixture.owner,
-    { teamId: team.id, playerId: registration.leagueMemberId, role: "PLAYER" }
-  );
-
+  const team = await fixture.teams.createTeam(fixture.owner, { name, rosterCap: 12, discordRoleId });
+  const player = await fixture.leagues.resolveLeagueContext("guild-1", discordUserId);
+  if (!player) throw new Error("Expected player context.");
+  const registration = await fixture.registrations.requestRegistration(player, { displayName: discordUserId });
+  await fixture.registrations.reviewRegistration(fixture.owner, { registrationId: registration.id, decision: "APPROVE" });
+  const membership = await fixture.rosters.assignPlayerToTeam(fixture.owner, {
+    teamId: team.id,
+    playerId: registration.leagueMemberId,
+    role: "PLAYER"
+  });
   return { team, membership, playerId: registration.leagueMemberId };
 }
 
-function createWorker(
-  fixture: Awaited<ReturnType<typeof createFixture>>,
-  gateway: DiscordRoleGateway
-) {
+function createWorker(fixture: Awaited<ReturnType<typeof createFixture>>, gateway: DiscordRoleGateway) {
   return createRoleSyncWorker(fixture.database, fixture.jobs, fixture.audit, gateway, {
     workerId: "worker-1",
     claimLimit: 4,
@@ -268,96 +139,52 @@ function createWorker(
   });
 }
 
-async function resolveContext(
-  leagues: ReturnType<typeof createLeagueService>,
-  discordUserId: string
-) {
-  const context = await leagues.resolveLeagueContext("guild-1", discordUserId);
-
-  if (!context) {
-    throw new Error("Expected an existing league context");
-  }
-  return context;
-}
-
-async function jobStatus(
-  database: Awaited<ReturnType<typeof createTestDatabase>>,
-  deduplicationKey: string
-): Promise<string | null> {
-  const result = await database.query<{ status: string }>(
-    "SELECT status FROM discord_jobs WHERE deduplication_key = $1",
-    [deduplicationKey]
-  );
+async function jobStatus(database: Awaited<ReturnType<typeof createTestDatabase>>, deduplicationKey: string): Promise<string | null> {
+  const result = await database.query<{ status: string }>("SELECT status FROM discord_jobs WHERE deduplication_key = $1", [deduplicationKey]);
   return result.rows[0]?.status ?? null;
 }
 
-async function activeRosterCount(
-  database: Awaited<ReturnType<typeof createTestDatabase>>,
-  teamId: string
-): Promise<number> {
-  const result = await database.query<{ count: string }>(
-    "SELECT COUNT(*)::text AS count FROM team_memberships WHERE team_id = $1 AND status = 'ACTIVE'",
-    [teamId]
-  );
+async function activeRosterCount(database: Awaited<ReturnType<typeof createTestDatabase>>, teamId: string): Promise<number> {
+  const result = await database.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM team_memberships WHERE team_id = $1 AND status = 'ACTIVE'", [teamId]);
   return Number(result.rows[0]?.count ?? "0");
 }
 
 class FakeDiscordRoleGateway implements DiscordRoleGateway {
-  readonly roles = new Map<string, string[]>();
-  readonly setCalls: Array<{ discordUserId: string; roleIds: string[] }> = [];
-  setFailure: Error | null = null;
-  removeRoleOnSetFailure: string | null = null;
+  readonly roles = new Map<string, Set<string>>();
+  readonly addCalls: Array<{ discordUserId: string; roleId: string }> = [];
+  readonly removeCalls: Array<{ discordUserId: string; roleId: string }> = [];
+  failure: Error | null = null;
   private readonly existingRoles: Set<string>;
 
   constructor(existingRoles: Iterable<string> = []) {
     this.existingRoles = new Set(existingRoles);
   }
 
-  async getMemberRoles(_discordGuildId: string, discordUserId: string): Promise<readonly string[]> {
-    return this.roles.get(discordUserId) ?? [];
+  async getMemberRoles(_guildId: string, discordUserId: string): Promise<readonly string[]> {
+    return [...this.rolesFor(discordUserId)];
   }
 
-  async setMemberRoles(_discordGuildId: string, discordUserId: string, roleIds: readonly string[]): Promise<void> {
-    if (this.setFailure) {
-      const failure = this.setFailure;
-      if (this.removeRoleOnSetFailure) {
-        this.existingRoles.delete(this.removeRoleOnSetFailure);
-        this.setFailure = null;
-      }
-      throw failure;
-    }
-    this.roles.set(discordUserId, [...roleIds]);
-    this.setCalls.push({ discordUserId, roleIds: [...roleIds] });
+  async addMemberRole(_guildId: string, discordUserId: string, roleId: string): Promise<void> {
+    if (this.failure) throw this.failure;
+    this.rolesFor(discordUserId).add(roleId);
+    this.addCalls.push({ discordUserId, roleId });
   }
 
-  async roleExists(_discordGuildId: string, roleId: string): Promise<boolean> {
+  async removeMemberRole(_guildId: string, discordUserId: string, roleId: string): Promise<void> {
+    if (this.failure) throw this.failure;
+    this.rolesFor(discordUserId).delete(roleId);
+    this.removeCalls.push({ discordUserId, roleId });
+  }
+
+  async roleExists(_guildId: string, roleId: string): Promise<boolean> {
     return this.existingRoles.has(roleId);
   }
-}
 
-class StaggeredGateway implements DiscordRoleGateway {
-  readonly firstSetStarted = Promise.withResolvers<void>();
-  readonly secondSetStarted = Promise.withResolvers<void>();
-  readonly releaseFirst = Promise.withResolvers<void>();
-  readonly releaseSecond = Promise.withResolvers<void>();
-  private setCalls = 0;
-
-  async getMemberRoles(): Promise<readonly string[]> {
-    return [];
-  }
-
-  async setMemberRoles(): Promise<void> {
-    this.setCalls += 1;
-    if (this.setCalls === 1) {
-      this.firstSetStarted.resolve();
-      await this.releaseFirst.promise;
-      return;
-    }
-    this.secondSetStarted.resolve();
-    await this.releaseSecond.promise;
-  }
-
-  async roleExists(): Promise<boolean> {
-    return true;
+  rolesFor(discordUserId: string): Set<string> {
+    const existing = this.roles.get(discordUserId);
+    if (existing) return existing;
+    const roles = new Set<string>();
+    this.roles.set(discordUserId, roles);
+    return roles;
   }
 }

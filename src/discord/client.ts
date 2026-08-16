@@ -45,11 +45,6 @@ export function createDiscordRoleGateway(client: Client): DiscordRoleGateway {
       const member = await guild.members.fetch(discordUserId);
       return [...member.roles.cache.keys()].filter((roleId) => roleId !== guild.id);
     },
-    setMemberRoles: async (discordGuildId, discordUserId, roleIds) => {
-      const guild = await client.guilds.fetch(discordGuildId);
-      const member = await guild.members.fetch(discordUserId);
-      await member.roles.set(roleIds.filter((roleId) => roleId !== guild.id));
-    },
     addMemberRole: async (discordGuildId, discordUserId, roleId) => {
       const guild = await client.guilds.fetch(discordGuildId);
       if (roleId !== guild.id) await (await guild.members.fetch(discordUserId)).roles.add(roleId);

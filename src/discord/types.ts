@@ -10,6 +10,7 @@ export type ApplicationServices = Readonly<{
   teams: TeamService;
   registrations: RegistrationService;
   rosters: RosterService;
+  routes: ComponentRouteStore;
   logger?: Pick<Logger, "error">;
 }>;
 
@@ -68,8 +69,6 @@ export type ComponentAction =
   | "registration.decline.confirm"
   | "roster.assign"
   | "roster.assign.player"
-  | "roster.assign.submit"
-  | "roster.assign.confirm"
   | "roster.membership.select"
   | "roster.release"
   | "roster.release.confirm";
@@ -77,20 +76,27 @@ export type ComponentAction =
 export type ComponentRoute = Readonly<{
   action: ComponentAction;
   entityId?: string;
-  version: number;
   actorId: string;
   expiresAt: number;
   nonce: string;
+  state: unknown;
 }>;
 
-export type ComponentRouteInput = Readonly<{
+export type ComponentRouteIssue = Readonly<{
+  guildId: string;
   action: ComponentAction;
   entityId?: string;
-  version?: number;
   actorId: string;
   expiresAt?: number;
-  nonce?: string;
+  state?: unknown;
 }>;
+
+export type ComponentRouteStore = Readonly<{
+  issue(input: ComponentRouteIssue): Promise<string>;
+  consume(input: Readonly<{ guildId: string; actorId: string; customId: string }>): Promise<ComponentRoute | null>;
+}>;
+
+export type ComponentRouteIssuer = Pick<ComponentRouteStore, "issue">;
 
 export type BaseInteractionLike = Readonly<{
   guildId: string | null;

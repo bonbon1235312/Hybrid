@@ -1,8 +1,7 @@
-import { encodeComponentId } from "./ids.js";
 import type { LeagueContext } from "../../modules/league/types.js";
 import type { RegistrationSummary } from "../../modules/registrations/types.js";
 import type { TeamDashboard } from "../../modules/teams/types.js";
-import type { InteractionReplyOptions, ReplyComponent } from "../types.js";
+import type { ComponentRouteIssuer, InteractionReplyOptions, ReplyComponent } from "../types.js";
 
 export type LeagueDashboardInput = Readonly<{
   context: LeagueContext | null;
@@ -11,14 +10,16 @@ export type LeagueDashboardInput = Readonly<{
   pendingRegistrations: readonly RegistrationSummary[];
   pendingRegistrationId?: string;
   actorId?: string;
+  guildId: string;
+  routes: ComponentRouteIssuer;
 }>;
 
-export function renderLeagueDashboard(input: LeagueDashboardInput): InteractionReplyOptions {
+export async function renderLeagueDashboard(input: LeagueDashboardInput): Promise<InteractionReplyOptions> {
   const actorId = input.context?.actor.discordUserId ?? input.actorId ?? "dashboard";
 
   if (!input.context) {
     const setup = input.canManageGuild
-      ? [{ data: { type: "button" as const, label: "Set up Hybrid", style: "primary" as const, customId: encodeComponentId({ action: "setup", actorId }) } }]
+      ? [{ data: { type: "button" as const, label: "Set up Hybrid", style: "primary" as const, customId: await input.routes.issue({ guildId: input.guildId, action: "setup", actorId }) } }]
       : [];
     return {
       content: input.canManageGuild
@@ -31,25 +32,25 @@ export function renderLeagueDashboard(input: LeagueDashboardInput): InteractionR
 
   const context = input.context;
   const actions: ReplyComponent[] = input.pendingRegistrationId
-    ? [{ data: { type: "button", label: "Withdraw registration", style: "danger", customId: encodeComponentId({ action: "registration.withdraw", entityId: input.pendingRegistrationId, actorId }) } }]
-    : [{ data: { type: "button", label: "Register", style: "primary", customId: encodeComponentId({ action: "registration.request", actorId }) } }];
+    ? [{ data: { type: "button", label: "Withdraw registration", style: "danger", customId: await input.routes.issue({ guildId: input.guildId, action: "registration.withdraw", entityId: input.pendingRegistrationId, actorId }) } }]
+    : [{ data: { type: "button", label: "Register", style: "primary", customId: await input.routes.issue({ guildId: input.guildId, action: "registration.request", actorId }) } }];
 
   if (context.actor.roles.includes("OWNER") || context.actor.roles.includes("ADMINISTRATOR") || context.actor.roles.includes("STAFF")) {
-    actions.push({ data: { type: "button", label: `Registrations (${input.pendingRegistrations.length})`, style: "secondary", customId: encodeComponentId({ action: "registrations", actorId }) } });
+    actions.push({ data: { type: "button", label: `Registrations (${input.pendingRegistrations.length})`, style: "secondary", customId: await input.routes.issue({ guildId: input.guildId, action: "registrations", actorId }) } });
   }
   if (context.actor.roles.includes("OWNER") || context.actor.roles.includes("ADMINISTRATOR")) {
-    actions.push({ data: { type: "button", label: "Create team", style: "primary", customId: encodeComponentId({ action: "team.create", actorId }) } });
+    actions.push({ data: { type: "button", label: "Create team", style: "primary", customId: await input.routes.issue({ guildId: input.guildId, action: "team.create", actorId }) } });
   }
   const teamSelect: ReplyComponent | null = input.teams.length > 0
     ? {
       data: {
         type: "select" as const,
-        customId: encodeComponentId({ action: "team.detail", actorId }),
-        options: input.teams.slice(0, 25).map((team) => ({
+        customId: await input.routes.issue({ guildId: input.guildId, action: "team.detail", actorId }),
+        options: await Promise.all(input.teams.slice(0, 25).map(async (team) => ({
           label: team.name.slice(0, 100),
-          value: encodeComponentId({ action: "team.detail", entityId: team.id, actorId }),
+          value: await input.routes.issue({ guildId: input.guildId, action: "team.detail", entityId: team.id, actorId }),
           description: `${team.rosterCount}/${team.rosterCap} · ${team.status}`
-        }))
+        })))
       }
     }
     : null;
