@@ -69,7 +69,14 @@
 - Produces createLogger(level: AppConfig["logLevel"]): Logger.
 - Produces scripts typecheck, lint, test, test:watch, build, dev, and db:generate.
 
-- [ ] **Step 1: Write the failing configuration test**
+- [ ] **Step 1: Create the test-runner configuration required to run a red test**
+
+Create package.json, tsconfig.json, vitest.config.ts, and eslint.config.mjs with
+the pinned dependencies and scripts from this task. This is the configuration
+exception to test-first work: it creates no application behavior and exists
+solely so the next test can execute. Run npm install after package.json exists.
+
+- [ ] **Step 2: Write the failing configuration test**
 
     import { describe, expect, it } from "vitest";
     import { loadConfig } from "../../src/platform/config.js";
@@ -89,13 +96,13 @@
       });
     });
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 3: Run the test to verify it fails**
 
 Run: npm test -- tests/platform/config.test.ts
 
 Expected: FAIL because src/platform/config.ts does not exist.
 
-- [ ] **Step 3: Implement the minimum foundation**
+- [ ] **Step 4: Implement the minimum foundation**
 
     export type AppConfig = Readonly<{
       discordToken: string;
@@ -117,13 +124,13 @@ Expected: FAIL because src/platform/config.ts does not exist.
 
 Pin the versions named in the plan header. Enable strict, noUncheckedIndexedAccess, and NodeNext TypeScript settings. Configure logger redaction for authorization headers, token, content, interaction, and database URL paths. Make main exit cleanly after a configuration error.
 
-- [ ] **Step 4: Run foundation checks**
+- [ ] **Step 5: Run foundation checks**
 
 Run: npm test -- tests/platform/config.test.ts && npm run typecheck && npm run lint && npm run build
 
 Expected: PASS with no TypeScript errors, lint violations, or generated secrets.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
     git add package.json package-lock.json tsconfig.json vitest.config.ts eslint.config.mjs src tests .env.example .gitignore
     git commit -m "chore: scaffold typed Hybrid bot"
