@@ -7,6 +7,8 @@ export type TeamMembership = Readonly<{
   id: string;
   leagueId: string;
   leagueMemberId: string;
+  /** Current Discord display name for roster presentation, when loaded as a list item. */
+  playerDisplayName?: string;
   teamId: string;
   role: TeamMembershipRole;
   status: TeamMembershipStatus;

@@ -292,9 +292,18 @@ export async function routeComponent(interaction: ComponentInteractionLike, serv
       if (!playerContext?.actor.leagueMemberId) {
         throw new DomainError("PLAYER_NOT_APPROVED", "That Discord member has no active league membership.");
       }
+      // A durable confirmation may outlive an administrator grant. Reload the
+      // actor after resolving the selected player, then enforce leadership
+      // authority immediately before the mutation.
+      const currentContext = await resolveContext(interaction, services);
+      requireContext(currentContext);
+      services.leagues.requirePermission(currentContext, "ROSTER_MANAGE", route.entityId);
+      if (assignment.role !== "PLAYER") {
+        services.leagues.requirePermission(currentContext, "TEAM_MANAGE");
+      }
       await interaction.deferUpdate();
-      await services.teams.getTeamDashboard(context, route.entityId);
-      await services.rosters.assignPlayerToTeam(context, {
+      await services.teams.getTeamDashboard(currentContext, route.entityId);
+      await services.rosters.assignPlayerToTeam(currentContext, {
         teamId: route.entityId,
         playerId: playerContext.actor.leagueMemberId,
         role: assignment.role

@@ -50,17 +50,22 @@ async function listActiveTeamMemberships(
     requirePermission(context, "ROSTER_MANAGE", team.id);
     const result = await transaction.query<TeamMembershipRow>(
       `SELECT
-         id,
-         league_id AS "leagueId",
-         league_member_id AS "leagueMemberId",
-         team_id AS "teamId",
-         membership_role AS role,
-         status,
-         ended_at AS "endedAt",
-         ended_by_member_id AS "endedByMemberId"
+         team_memberships.id,
+         team_memberships.league_id AS "leagueId",
+         team_memberships.league_member_id AS "leagueMemberId",
+         discord_users.display_name AS "playerDisplayName",
+         team_memberships.team_id AS "teamId",
+         team_memberships.membership_role AS role,
+         team_memberships.status,
+         team_memberships.ended_at AS "endedAt",
+         team_memberships.ended_by_member_id AS "endedByMemberId"
        FROM team_memberships
-       WHERE league_id = $1 AND team_id = $2 AND status = 'ACTIVE'
-       ORDER BY id`,
+       JOIN league_members
+         ON league_members.league_id = team_memberships.league_id
+         AND league_members.id = team_memberships.league_member_id
+       JOIN discord_users ON discord_users.discord_user_id = league_members.discord_user_id
+       WHERE team_memberships.league_id = $1 AND team_memberships.team_id = $2 AND team_memberships.status = 'ACTIVE'
+       ORDER BY team_memberships.id`,
       [context.leagueId, team.id]
     );
     return result.rows;
@@ -93,10 +98,7 @@ async function assignPlayerToTeam(
 
   return withTransaction(database, async (transaction) => {
     const team = await findTeam(transaction, context.leagueId, input.teamId, true);
-    requirePermission(context, "ROSTER_MANAGE", team.id);
-    if (input.role !== "PLAYER") {
-      requirePermission(context, "TEAM_MANAGE");
-    }
+    requireAssignmentPermission(context, team.id, input.role);
 
     if (team.status !== "ACTIVE") {
       throw new DomainError("TEAM_NOT_ACTIVE", "This team is not active.");
@@ -344,6 +346,13 @@ async function insertMembership(
 function validateMembershipRole(role: TeamMembershipRole): void {
   if (role !== "PLAYER" && role !== "MANAGER" && role !== "CAPTAIN") {
     throw new DomainError("INVALID_INPUT", "Team membership role must be valid.");
+  }
+}
+
+function requireAssignmentPermission(context: LeagueContext, teamId: string, role: TeamMembershipRole): void {
+  requirePermission(context, "ROSTER_MANAGE", teamId);
+  if (role !== "PLAYER") {
+    requirePermission(context, "TEAM_MANAGE");
   }
 }
 

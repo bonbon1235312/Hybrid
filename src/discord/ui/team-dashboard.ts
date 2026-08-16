@@ -40,7 +40,7 @@ export async function renderTeamDashboard(input: Readonly<{
             type: "select" as const,
             customId: await input.routes.issue({ guildId: input.guildId, action: "roster.membership.select", actorId: input.actorId }),
             options: await Promise.all(input.memberships.slice(0, 25).map(async (membership) => ({
-              label: `Release ${membership.leagueMemberId.slice(0, 80)}`,
+              label: releaseLabel(membership),
               value: await input.routes.issue({ guildId: input.guildId, action: "roster.release", entityId: membership.id, actorId: input.actorId }),
               description: `${membership.role.toLowerCase()} membership`
             })))
@@ -49,4 +49,9 @@ export async function renderTeamDashboard(input: Readonly<{
       }] : [])
     ]
   };
+}
+
+function releaseLabel(membership: TeamMembership): string {
+  const displayName = membership.playerDisplayName?.trim().replace(/\s+/g, " ") || "Player";
+  return `Release ${displayName.slice(0, 92)}`;
 }

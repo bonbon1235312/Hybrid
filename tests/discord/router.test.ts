@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createHybridApplication } from "../../src/app.js";
 import { routeComponent } from "../../src/discord/router.js";
-import type { ComponentInteractionLike, InteractionReplyOptions, ModalOptions } from "../../src/discord/types.js";
+import type { ApplicationServices, ComponentInteractionLike, InteractionReplyOptions, ModalOptions } from "../../src/discord/types.js";
 import type { DiscordRoleGateway } from "../../src/modules/discord-jobs/worker.js";
 import type { LeagueContext } from "../../src/modules/league/types.js";
 import { createTestDatabase } from "../../src/platform/test-db.js";
@@ -89,6 +89,19 @@ describe("guided League Core router", () => {
       await expect(fixture.app.services.rosters.listActiveTeamMemberships(owner, team.id))
         .resolves.toMatchObject([{ leagueMemberId: registration.leagueMemberId, role: "CAPTAIN" }]);
       expect(confirmAssignment.edits.at(-1)?.content).toBe("Captain assigned. Discord role sync is queued.");
+
+      const teamPicker = await fixture.app.services.routes.issue({
+        guildId: "guild-1", actorId: "owner-1", action: "team.detail"
+      });
+      const selectedTeam = await fixture.app.services.routes.issue({
+        guildId: "guild-1", actorId: "owner-1", action: "team.detail", entityId: team.id
+      });
+      const dashboard = component(teamPicker, "owner-1", undefined, [selectedTeam]);
+      await routeComponent(dashboard, fixture.app.services);
+      const releaseOption = dashboard.edits.at(-1)?.components?.flatMap((row) => row.components)
+        .find((control) => control.data.type === "select")?.data.options?.[0];
+      expect(releaseOption?.label).toBe("Release Player One");
+      expect(releaseOption?.label).not.toContain(registration.leagueMemberId);
     } finally {
       await fixture.app.stop();
     }
@@ -137,6 +150,65 @@ describe("guided League Core router", () => {
       await fixture.app.stop();
     }
   });
+
+  it("rejects a leadership confirmation if the actor loses team-management authority while selecting the player", async () => {
+    const fixture = await createFixture();
+    try {
+      const owner = await fixture.app.services.leagues.bootstrapLeague({
+        discordGuildId: "guild-1",
+        actor: { discordUserId: "owner-1", displayName: "Owner", manageGuild: true },
+        name: "Hybrid League",
+        defaultRosterCap: 12
+      });
+      const team = await fixture.app.services.teams.createTeam(owner, { name: "Northstar", rosterCap: 8 });
+      const manager = await registerAndApprove(fixture.app, owner, "manager-1");
+      const player = await registerAndApprove(fixture.app, owner, "player-1");
+      await fixture.app.services.rosters.assignPlayerToTeam(owner, {
+        teamId: team.id,
+        playerId: manager.leagueMemberId,
+        role: "MANAGER"
+      });
+      await fixture.database.query(
+        "INSERT INTO staff_assignments (id, league_id, league_member_id, role) VALUES ($1, $2, $3, $4)",
+        ["00000000-0000-4000-8000-000000000099", owner.leagueId, manager.leagueMemberId, "ADMINISTRATOR"]
+      );
+
+      const initialContext = await fixture.app.services.leagues.resolveLeagueContext("guild-1", "manager-1");
+      expect(initialContext?.actor.roles).toContain("ADMINISTRATOR");
+      const confirmation = component(await fixture.app.services.routes.issue({
+        guildId: "guild-1",
+        actorId: "manager-1",
+        action: "roster.assign.confirm",
+        entityId: team.id,
+        state: { discordUserId: "player-1", role: "CAPTAIN" }
+      }), "manager-1");
+      let authorityRevoked = false;
+      const revokingServices: ApplicationServices = {
+        ...fixture.app.services,
+        leagues: {
+          ...fixture.app.services.leagues,
+          resolveLeagueContext: async (discordGuildId, discordUserId) => {
+            if (discordUserId === "player-1" && !authorityRevoked) {
+              authorityRevoked = true;
+              await fixture.database.query(
+                "UPDATE staff_assignments SET ended_at = NOW() WHERE league_id = $1 AND league_member_id = $2 AND role = $3",
+                [owner.leagueId, manager.leagueMemberId, "ADMINISTRATOR"]
+              );
+            }
+            return fixture.app.services.leagues.resolveLeagueContext(discordGuildId, discordUserId);
+          }
+        }
+      };
+
+      await expect(routeComponent(confirmation, revokingServices)).rejects.toMatchObject({ code: "FORBIDDEN" });
+      await expect(fixture.app.services.rosters.listActiveTeamMemberships(owner, team.id))
+        .resolves.toMatchObject([{ leagueMemberId: manager.leagueMemberId, role: "MANAGER" }]);
+      expect(authorityRevoked).toBe(true);
+      expect(player.leagueMemberId).toBeDefined();
+    } finally {
+      await fixture.app.stop();
+    }
+  });
 });
 
 async function createFixture() {
@@ -146,7 +218,7 @@ async function createFixture() {
     discordClient: { login: async () => undefined, destroy: () => undefined },
     discordGateway: noOpGateway
   });
-  return { app };
+  return { app, database };
 }
 
 const noOpGateway: DiscordRoleGateway = {
