@@ -1,0 +1,61 @@
+import { encodeComponentId } from "./ids.js";
+import type { LeagueContext } from "../../modules/league/types.js";
+import type { RegistrationSummary } from "../../modules/registrations/types.js";
+import type { TeamDashboard } from "../../modules/teams/types.js";
+import type { InteractionReplyOptions, ReplyComponent } from "../types.js";
+
+export type LeagueDashboardInput = Readonly<{
+  context: LeagueContext | null;
+  canManageGuild: boolean;
+  teams: readonly TeamDashboard[];
+  pendingRegistrations: readonly RegistrationSummary[];
+  actorId?: string;
+}>;
+
+export function renderLeagueDashboard(input: LeagueDashboardInput): InteractionReplyOptions {
+  const actorId = input.context?.actor.discordUserId ?? input.actorId ?? "dashboard";
+
+  if (!input.context) {
+    const setup = input.canManageGuild
+      ? [{ data: { type: "button" as const, label: "Set up Hybrid", style: "primary" as const, customId: encodeComponentId({ action: "setup", actorId }) } }]
+      : [];
+    return {
+      content: input.canManageGuild
+        ? "**Hybrid League**\nThis server is not configured yet. Set up your league to begin."
+        : "**Hybrid League**\nThis server has not been configured yet. Ask a server manager to run `/league`.",
+      ephemeral: true,
+      ...(setup.length > 0 ? { components: [{ components: setup }] } : {})
+    };
+  }
+
+  const context = input.context;
+  const actions: ReplyComponent[] = [
+    { data: { type: "button", label: "Register", style: "primary", customId: encodeComponentId({ action: "registration.request", actorId }) } }
+  ];
+
+  if (context.actor.roles.includes("OWNER") || context.actor.roles.includes("ADMINISTRATOR") || context.actor.roles.includes("STAFF")) {
+    actions.push({ data: { type: "button", label: `Registrations (${input.pendingRegistrations.length})`, style: "secondary", customId: encodeComponentId({ action: "registrations", actorId }) } });
+  }
+  const teamSelect: ReplyComponent | null = input.teams.length > 0
+    ? {
+      data: {
+        type: "select" as const,
+        customId: encodeComponentId({ action: "team.detail", actorId }),
+        options: input.teams.slice(0, 25).map((team) => ({
+          label: team.name.slice(0, 100),
+          value: encodeComponentId({ action: "team.detail", entityId: team.id, actorId }),
+          description: `${team.rosterCount}/${team.rosterCap} · ${team.status}`
+        }))
+      }
+    }
+    : null;
+
+  return {
+    content: `**League Dashboard**\nRole: ${context.actor.role} · ${input.teams.length} team${input.teams.length === 1 ? "" : "s"}.`,
+    ephemeral: true,
+    components: [
+      { components: actions },
+      ...(teamSelect ? [{ components: [teamSelect] }] : [])
+    ]
+  };
+}

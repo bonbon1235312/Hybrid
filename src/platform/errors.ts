@@ -14,7 +14,8 @@ export type DomainErrorCode =
   | "PLAYER_NOT_APPROVED"
   | "PLAYER_ALREADY_ASSIGNED"
   | "TEAM_MEMBERSHIP_NOT_FOUND"
-  | "TEAM_MEMBERSHIP_NOT_ACTIVE";
+  | "TEAM_MEMBERSHIP_NOT_ACTIVE"
+  | "ACTION_EXPIRED";
 
 export class DomainError extends Error {
   readonly code: DomainErrorCode;
